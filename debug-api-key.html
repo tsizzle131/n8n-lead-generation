@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Debug API Key Issue</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 900px; margin: 20px auto; padding: 20px; }
+        .step { margin-bottom: 30px; padding: 20px; border: 1px solid #ddd; border-radius: 8px; }
+        input[type="password"] { width: 100%; padding: 10px; margin: 10px 0; font-family: monospace; }
+        button { background: #007cba; color: white; padding: 12px 24px; border: none; border-radius: 4px; cursor: pointer; margin: 5px; }
+        button:hover { background: #005a87; }
+        .result { margin-top: 15px; padding: 15px; border-radius: 4px; white-space: pre-wrap; font-family: monospace; font-size: 0.9em; }
+        .success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        .info { background: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb; }
+        h2 { color: #333; }
+    </style>
+</head>
+<body>
+    <h1>🔧 Debug API Key Connection Issue</h1>
+    
+    <div class="step">
+        <h2>Step 1: Enter Your OpenAI API Key</h2>
+        <p><strong>Important:</strong> Use your real OpenAI API key that starts with <code>sk-proj-</code> or <code>sk-</code></p>
+        <input type="password" id="apiKey" placeholder="sk-proj-..." />
+        <button onclick="saveKey()">Save API Key</button>
+        <div id="saveResult"></div>
+    </div>
+
+    <div class="step">
+        <h2>Step 2: Check What's Stored</h2>
+        <button onclick="checkStored()">Check Stored Keys</button>
+        <div id="storedResult"></div>
+    </div>
+
+    <div class="step">
+        <h2>Step 3: Test Connection</h2>
+        <button onclick="testConnection()">Test OpenAI Connection</button>
+        <div id="testResult"></div>
+    </div>
+
+    <div class="step">
+        <h2>Step 4: Check State File</h2>
+        <p>This shows what's actually saved to disk</p>
+        <button onclick="checkStateFile()">Check State File Contents</button>
+        <div id="stateResult"></div>
+    </div>
+
+    <script>
+        async function saveKey() {
+            const apiKey = document.getElementById('apiKey').value.trim();
+            const resultDiv = document.getElementById('saveResult');
+            
+            if (!apiKey) {
+                resultDiv.className = 'result error';
+                resultDiv.textContent = '❌ Please enter an API key';
+                return;
+            }
+            
+            if (!apiKey.startsWith('sk-')) {
+                resultDiv.className = 'result error';
+                resultDiv.textContent = '❌ OpenAI API keys should start with "sk-"';
+                return;
+            }
+            
+            try {
+                resultDiv.className = 'result info';
+                resultDiv.textContent = 'Saving API key...';
+                
+                const response = await fetch('http://localhost:8000/api-keys', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ openai_api_key: apiKey })
+                });
+                
+                const result = await response.json();
+                resultDiv.className = 'result success';
+                resultDiv.textContent = `✅ ${result.message}\n\nKey length: ${apiKey.length} characters\nKey preview: ${apiKey.substring(0, 15)}...`;
+                
+            } catch (error) {
+                resultDiv.className = 'result error';
+                resultDiv.textContent = `❌ Error saving API key: ${error.message}`;
+            }
+        }
+
+        async function checkStored() {
+            const resultDiv = document.getElementById('storedResult');
+            
+            try {
+                resultDiv.className = 'result info';
+                resultDiv.textContent = 'Checking stored keys...';
+                
+                const response = await fetch('http://localhost:8000/api-keys');
+                const keys = await response.json();
+                
+                resultDiv.className = 'result success';
+                resultDiv.textContent = `✅ Stored keys:\n${JSON.stringify(keys, null, 2)}`;
+                
+            } catch (error) {
+                resultDiv.className = 'result error';
+                resultDiv.textContent = `❌ Error checking keys: ${error.message}`;
+            }
+        }
+
+        async function testConnection() {
+            const resultDiv = document.getElementById('testResult');
+            resultDiv.className = 'result info';
+            resultDiv.textContent = '🧪 Testing OpenAI connection...';
+            
+            try {
+                const response = await fetch('http://localhost:8000/test-connection', {
+                    method: 'POST'
+                });
+                
+                const result = await response.json();
+                
+                if (result.status === 'success') {
+                    resultDiv.className = 'result success';
+                    resultDiv.textContent = `✅ ${result.message}`;
+                } else {
+                    resultDiv.className = 'result error';
+                    resultDiv.textContent = `❌ ${result.message}`;
+                }
+                
+            } catch (error) {
+                resultDiv.className = 'result error';
+                resultDiv.textContent = `❌ Connection test failed: ${error.message}`;
+            }
+        }
+
+        async function checkStateFile() {
+            const resultDiv = document.getElementById('stateResult');
+            resultDiv.className = 'result info';
+            resultDiv.textContent = 'Note: This would require server-side access to show the actual .app-state.json file contents. The key point is that the state file should contain the REAL API key, not a masked version.';
+        }
+    </script>
+
+    <div style="margin-top: 40px; padding: 20px; background: #f8f9fa; border-radius: 8px;">
+        <h3>🔍 Debugging Notes</h3>
+        <ul>
+            <li><strong>The Issue:</strong> API keys were being saved as masked strings instead of real keys</li>
+            <li><strong>The Fix:</strong> Server now stores real keys internally, only returns masked versions to the UI</li>
+            <li><strong>Test Process:</strong> Save key → Check it's stored → Test connection → Should succeed!</li>
+            <li><strong>Common Issues:</strong> Invalid key format, network issues, insufficient OpenAI credits</li>
+        </ul>
+    </div>
+</body>
+</html>

@@ -1,0 +1,29 @@
+# API Keys - keep secure
+api/api_keys.json
+.app-state.json
+
+# Node modules
+node_modules/
+frontend/node_modules/
+
+# Environment files
+.env
+.env.local
+.env.production
+
+# Logs
+*.log
+lead_generation/*.log
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE files
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db

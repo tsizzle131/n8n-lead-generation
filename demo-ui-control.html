@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>🎛️ React UI → Python Control Demo</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 1000px; margin: 20px auto; padding: 20px; }
+        .demo-section { margin-bottom: 30px; padding: 20px; border: 1px solid #ddd; border-radius: 8px; }
+        .success { background: #d4edda; color: #155724; padding: 15px; border-radius: 8px; margin: 10px 0; }
+        .info { background: #d1ecf1; color: #0c5460; padding: 15px; border-radius: 8px; margin: 10px 0; }
+        .warning { background: #fff3cd; color: #856404; padding: 15px; border-radius: 8px; margin: 10px 0; }
+        button { background: #007cba; color: white; padding: 12px 24px; border: none; border-radius: 4px; cursor: pointer; margin: 5px; }
+        button:hover { background: #005a87; }
+        textarea { width: 100%; height: 100px; margin: 10px 0; padding: 10px; font-family: monospace; }
+        .code { background: #f8f9fa; padding: 15px; border-radius: 4px; font-family: monospace; margin: 10px 0; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        h1 { color: #333; text-align: center; }
+        h2 { color: #666; }
+    </style>
+</head>
+<body>
+    <h1>🎛️ Master Control Panel Integration</h1>
+    <div class="success">
+        <strong>✅ Integration Complete!</strong> Your React UI now controls your Python production script.
+    </div>
+
+    <div class="grid">
+        <div class="demo-section">
+            <h2>🔧 What Changed</h2>
+            <ul>
+                <li><strong>config.py</strong> → Reads from <code>.app-state.json</code></li>
+                <li><strong>ai_processor.py</strong> → Uses dynamic prompts from UI</li>
+                <li><strong>main.py</strong> → Loads UI settings on startup</li>
+                <li><strong>API Keys</strong> → Managed through React UI</li>
+                <li><strong>Real-time</strong> → Changes take effect immediately</li>
+            </ul>
+        </div>
+
+        <div class="demo-section">
+            <h2>🎯 How It Works</h2>
+            <ol>
+                <li>Edit prompts in React UI</li>
+                <li>Change AI models/temperature</li>
+                <li>Update API keys</li>
+                <li>Run <code>python main.py</code></li>
+                <li>Uses your UI settings!</li>
+            </ol>
+        </div>
+    </div>
+
+    <div class="demo-section">
+        <h2>🧪 Test the Integration</h2>
+        <div class="info">
+            <strong>Step 1:</strong> Open React UI at <a href="http://localhost:3000" target="_blank">http://localhost:3000</a>
+        </div>
+        
+        <div class="info">
+            <strong>Step 2:</strong> Go to "Prompt Editor" → Edit the icebreaker prompt → Save
+        </div>
+
+        <div class="info">
+            <strong>Step 3:</strong> Run this command to test:
+            <div class="code">cd "/Users/tristanwaite/n8n test" && python3 test-integration.py</div>
+        </div>
+
+        <div class="info">
+            <strong>Step 4:</strong> Run production script:
+            <div class="code">cd "/Users/tristanwaite/n8n test/lead_generation" && python3 main.py test</div>
+        </div>
+    </div>
+
+    <div class="demo-section">
+        <h2>🎉 What You Can Now Control</h2>
+        <div class="grid">
+            <div>
+                <h3>✏️ Prompts</h3>
+                <ul>
+                    <li>Website summarization prompt</li>
+                    <li>Icebreaker generation prompt</li>
+                    <li>Import/export templates</li>
+                </ul>
+            </div>
+            <div>
+                <h3>🤖 AI Settings</h3>
+                <ul>
+                    <li>Model selection (GPT-4o, GPT-3.5, etc.)</li>
+                    <li>Temperature (creativity)</li>
+                    <li>Rate limiting delays</li>
+                </ul>
+            </div>
+        </div>
+        <div class="grid">
+            <div>
+                <h3>🔑 API Keys</h3>
+                <ul>
+                    <li>OpenAI API key</li>
+                    <li>Apify API key</li>
+                    <li>Secure storage</li>
+                </ul>
+            </div>
+            <div>
+                <h3>📊 Real-time</h3>
+                <ul>
+                    <li>No server restarts needed</li>
+                    <li>Immediate effect</li>
+                    <li>Live configuration</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <div class="demo-section">
+        <h2>🚀 Quick Start Workflow</h2>
+        <div class="warning">
+            <strong>Perfect Workflow:</strong>
+            <ol>
+                <li><strong>Test & Perfect:</strong> Use React UI to test prompts with sample data</li>
+                <li><strong>Go Live:</strong> Run <code>python main.py</code> with your perfected settings</li>
+                <li><strong>Iterate:</strong> Adjust prompts in UI and re-run as needed</li>
+                <li><strong>Scale:</strong> Your production system uses your UI-perfected configuration</li>
+            </ol>
+        </div>
+    </div>
+
+    <div class="demo-section">
+        <h2>📁 File Integration</h2>
+        <div class="code">
+React UI Settings (.app-state.json)
+        ↓
+Python Config (config.py)
+        ↓  
+AI Processor (ai_processor.py)
+        ↓
+Production Script (main.py)
+        </div>
+        <div class="success">
+            <strong>Result:</strong> One source of truth for all configuration! 🎯
+        </div>
+    </div>
+
+</body>
+</html>

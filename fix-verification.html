@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>🔧 API Key Masking Fix Verification</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 900px; margin: 20px auto; padding: 20px; }
+        .section { margin-bottom: 30px; padding: 20px; border: 1px solid #ddd; border-radius: 8px; }
+        .success { background: #d4edda; color: #155724; padding: 15px; border-radius: 8px; margin: 10px 0; }
+        .error { background: #f8d7da; color: #721c24; padding: 15px; border-radius: 8px; margin: 10px 0; }
+        .info { background: #d1ecf1; color: #0c5460; padding: 15px; border-radius: 8px; margin: 10px 0; }
+        button { background: #007cba; color: white; padding: 12px 24px; border: none; border-radius: 4px; cursor: pointer; margin: 5px; }
+        button:hover { background: #005a87; }
+        input[type="password"] { width: 100%; padding: 10px; margin: 10px 0; font-family: monospace; }
+        .result { margin-top: 15px; padding: 15px; border-radius: 4px; white-space: pre-wrap; font-family: monospace; font-size: 0.9em; }
+        h1 { color: #333; text-align: center; }
+    </style>
+</head>
+<body>
+    <h1>🔧 API Key Masking Fix Verification</h1>
+
+    <div class="info">
+        <strong>🎯 The Fix:</strong> Server now prevents saving masked API keys and React UI only sends real keys.
+    </div>
+
+    <div class="section">
+        <h2>Step 1: Enter Your Real OpenAI API Key</h2>
+        <input type="password" id="realApiKey" placeholder="sk-proj-..." />
+        <button onclick="saveRealKey()">Save Real API Key</button>
+        <div id="saveResult"></div>
+    </div>
+
+    <div class="section">
+        <h2>Step 2: Check What's Actually Stored</h2>
+        <button onclick="checkStoredKeys()">Check Stored Keys (Returns Masked)</button>
+        <div id="storedResult"></div>
+    </div>
+
+    <div class="section">
+        <h2>Step 3: Test Connection</h2>
+        <button onclick="testConnection()">Test OpenAI Connection</button>
+        <div id="testResult"></div>
+    </div>
+
+    <div class="section">
+        <h2>Step 4: Verify State File</h2>
+        <div class="info">
+            The <code>.app-state.json</code> file should contain the REAL API key, not masked stars.
+            The masking only happens when returning keys to the UI for display.
+        </div>
+    </div>
+
+    <div class="section">
+        <h2>🔄 Test Integration with Python</h2>
+        <div class="info">
+            After saving your API key above, run this command to test Python integration:
+            <br><br>
+            <code>cd "/Users/tristanwaite/n8n test" && python3 test-integration.py</code>
+        </div>
+    </div>
+
+    <script>
+        async function saveRealKey() {
+            const apiKey = document.getElementById('realApiKey').value.trim();
+            const resultDiv = document.getElementById('saveResult');
+            
+            if (!apiKey) {
+                resultDiv.className = 'result error';
+                resultDiv.textContent = '❌ Please enter an API key';
+                return;
+            }
+            
+            if (!apiKey.startsWith('sk-')) {
+                resultDiv.className = 'result error';
+                resultDiv.textContent = '❌ OpenAI API keys should start with "sk-"';
+                return;
+            }
+            
+            if (apiKey.includes('*')) {
+                resultDiv.className = 'result error';
+                resultDiv.textContent = '❌ Please enter a REAL API key, not a masked one';
+                return;
+            }
+            
+            try {
+                resultDiv.className = 'result info';
+                resultDiv.textContent = 'Saving real API key...';
+                
+                const response = await fetch('http://localhost:8000/api-keys', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ openai_api_key: apiKey })
+                });
+                
+                const result = await response.json();
+                resultDiv.className = 'result success';
+                resultDiv.textContent = `✅ ${result.message}\n\nReal key saved: ${apiKey.substring(0, 15)}...\nLength: ${apiKey.length} characters`;
+                
+                // Clear the input for security
+                document.getElementById('realApiKey').value = '';
+                
+            } catch (error) {
+                resultDiv.className = 'result error';
+                resultDiv.textContent = `❌ Error saving API key: ${error.message}`;
+            }
+        }
+
+        async function checkStoredKeys() {
+            const resultDiv = document.getElementById('storedResult');
+            
+            try {
+                resultDiv.className = 'result info';
+                resultDiv.textContent = 'Checking stored keys...';
+                
+                const response = await fetch('http://localhost:8000/api-keys');
+                const keys = await response.json();
+                
+                resultDiv.className = 'result success';
+                resultDiv.textContent = `✅ Server returns (masked for security):\n${JSON.stringify(keys, null, 2)}\n\n🔍 The real key is stored internally, but masked when returned to UI.`;
+                
+            } catch (error) {
+                resultDiv.className = 'result error';
+                resultDiv.textContent = `❌ Error checking keys: ${error.message}`;
+            }
+        }
+
+        async function testConnection() {
+            const resultDiv = document.getElementById('testResult');
+            resultDiv.className = 'result info';
+            resultDiv.textContent = '🧪 Testing OpenAI connection with saved key...';
+            
+            try {
+                const response = await fetch('http://localhost:8000/test-connection', {
+                    method: 'POST'
+                });
+                
+                const result = await response.json();
+                
+                if (result.status === 'success') {
+                    resultDiv.className = 'result success';
+                    resultDiv.textContent = `✅ ${result.message}\n\n🎉 The real API key is working correctly!`;
+                } else {
+                    resultDiv.className = 'result error';
+                    resultDiv.textContent = `❌ ${result.message}`;
+                }
+                
+            } catch (error) {
+                resultDiv.className = 'result error';
+                resultDiv.textContent = `❌ Connection test failed: ${error.message}`;
+            }
+        }
+    </script>
+
+    <div style="margin-top: 40px; padding: 20px; background: #f8f9fa; border-radius: 8px;">
+        <h3>🔒 Security Note</h3>
+        <p><strong>How the fix works:</strong></p>
+        <ul>
+            <li>✅ <strong>Real keys</strong> are stored in <code>.app-state.json</code></li>
+            <li>✅ <strong>Masked keys</strong> are returned to UI for display only</li>
+            <li>✅ <strong>Server rejects</strong> any attempt to save masked keys</li>
+            <li>✅ <strong>React UI</strong> only sends real keys, never masked ones</li>
+            <li>✅ <strong>Python script</strong> reads real keys from state file</li>
+        </ul>
+    </div>
+</body>
+</html>

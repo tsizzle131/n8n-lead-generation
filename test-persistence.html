@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test API Key Persistence</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 800px; margin: 50px auto; padding: 20px; }
+        .section { margin-bottom: 30px; padding: 20px; border: 1px solid #ddd; border-radius: 5px; }
+        input[type="password"], input[type="text"] { width: 100%; padding: 8px; margin: 5px 0; }
+        button { background: #007cba; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; margin: 5px; }
+        button:hover { background: #005a87; }
+        .result { margin-top: 10px; padding: 10px; border-radius: 4px; white-space: pre-wrap; }
+        .success { background: #d4edda; color: #155724; }
+        .error { background: #f8d7da; color: #721c24; }
+    </style>
+</head>
+<body>
+    <h1>API Key Persistence Test</h1>
+    
+    <div class="section">
+        <h2>1. Save API Key</h2>
+        <input type="password" id="apiKey" placeholder="Enter your OpenAI API key (sk-...)" />
+        <button onclick="saveApiKey()">Save API Key</button>
+        <div id="saveResult"></div>
+    </div>
+
+    <div class="section">
+        <h2>2. Check Saved Keys</h2>
+        <button onclick="checkSavedKeys()">Check What's Saved</button>
+        <div id="keysResult"></div>
+    </div>
+
+    <div class="section">
+        <h2>3. Test Connection</h2>
+        <button onclick="testConnection()">Test OpenAI Connection</button>
+        <div id="testResult"></div>
+    </div>
+
+    <div class="section">
+        <h2>4. Instructions</h2>
+        <ol>
+            <li><strong>Save your real OpenAI API key</strong> (starts with sk-)</li>
+            <li><strong>Check that it's saved</strong> (should show masked version)</li>
+            <li><strong>Test the connection</strong> (should succeed with valid key)</li>
+            <li><strong>Refresh this page</strong> and test again (persistence test)</li>
+        </ol>
+        <p><strong>Note:</strong> The server now saves your API keys to a file, so they persist across server restarts!</p>
+    </div>
+
+    <script>
+        async function saveApiKey() {
+            const apiKey = document.getElementById('apiKey').value;
+            const resultDiv = document.getElementById('saveResult');
+            
+            if (!apiKey) {
+                resultDiv.className = 'result error';
+                resultDiv.textContent = 'Please enter an API key';
+                return;
+            }
+            
+            try {
+                const response = await fetch('http://localhost:8000/api-keys', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ openai_api_key: apiKey })
+                });
+                
+                const result = await response.json();
+                resultDiv.className = 'result success';
+                resultDiv.textContent = '✅ ' + result.message;
+                
+            } catch (error) {
+                resultDiv.className = 'result error';
+                resultDiv.textContent = '❌ Error saving API key: ' + error.message;
+            }
+        }
+
+        async function checkSavedKeys() {
+            const resultDiv = document.getElementById('keysResult');
+            
+            try {
+                const response = await fetch('http://localhost:8000/api-keys');
+                const keys = await response.json();
+                
+                resultDiv.className = 'result success';
+                resultDiv.textContent = '✅ Saved keys:\n' + JSON.stringify(keys, null, 2);
+                
+            } catch (error) {
+                resultDiv.className = 'result error';
+                resultDiv.textContent = '❌ Error checking keys: ' + error.message;
+            }
+        }
+
+        async function testConnection() {
+            const resultDiv = document.getElementById('testResult');
+            resultDiv.className = 'result';
+            resultDiv.textContent = 'Testing connection...';
+            
+            try {
+                const response = await fetch('http://localhost:8000/test-connection', {
+                    method: 'POST'
+                });
+                
+                const result = await response.json();
+                
+                if (result.status === 'success') {
+                    resultDiv.className = 'result success';
+                    resultDiv.textContent = '✅ ' + result.message;
+                } else {
+                    resultDiv.className = 'result error';
+                    resultDiv.textContent = '❌ ' + result.message;
+                }
+                
+            } catch (error) {
+                resultDiv.className = 'result error';
+                resultDiv.textContent = '❌ Error testing connection: ' + error.message;
+            }
+        }
+    </script>
+</body>
+</html>

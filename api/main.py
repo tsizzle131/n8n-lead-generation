@@ -1,0 +1,1108 @@
+from fastapi import FastAPI, HTTPException, Request, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+import os
+import sys
+import json
+import asyncio
+import logging
+from typing import Dict, Any, List, Optional
+from datetime import datetime, timezone
+from pathlib import Path
+
+# Setup logging first
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Add lead_generation modules to path
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'lead_generation', 'modules'))
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'lead_generation'))
+
+from ai_processor import AIProcessor
+from supabase_manager import SupabaseManager
+import config
+from vapi_service import VapiService, create_vapi_service, test_vapi_connection, PhoneNumberPool
+
+app = FastAPI(title="Lead Generation API", version="1.0.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Use same state file as the React UI
+APP_STATE_FILE = Path(__file__).parent.parent / ".app-state.json"
+
+def load_api_keys():
+    """Load API keys from .app-state.json to match React UI"""
+    if APP_STATE_FILE.exists():
+        try:
+            with open(APP_STATE_FILE, 'r') as f:
+                app_state = json.load(f)
+                return app_state.get('apiKeys', {})
+        except Exception as e:
+            logger.error(f"Failed to load API keys from app state: {e}")
+    return {}
+
+def save_api_keys(keys):
+    """Save API keys to .app-state.json to match React UI"""
+    try:
+        # Load existing state
+        app_state = {}
+        if APP_STATE_FILE.exists():
+            with open(APP_STATE_FILE, 'r') as f:
+                app_state = json.load(f)
+        
+        # Update apiKeys section
+        app_state['apiKeys'] = keys
+        
+        # Save back to file
+        with open(APP_STATE_FILE, 'w') as f:
+            json.dump(app_state, f, indent=2)
+            
+        logger.info("✅ API keys saved to app state file")
+    except Exception as e:
+        logger.error(f"Failed to save API keys to app state: {e}")
+
+# In-memory storage for API keys and settings
+app_state = {
+    "api_keys": load_api_keys(),
+    "settings": {
+        "ai_model_summary": "gpt-4o-mini",
+        "ai_model_icebreaker": "gpt-4o",
+        "ai_temperature": 0.5,
+        "delay_between_ai_calls": 45
+    },
+    "prompts": {
+        "summary": """You're provided a Markdown scrape of a website page. Your task is to provide a two-paragraph abstract of what this page is about.
+
+Return in this JSON format:
+
+{"abstract":"your abstract goes here"}
+
+Rules:
+- Your extract should be comprehensive—similar level of detail as an abstract to a published paper.
+- Use a straightforward, spartan tone of voice.
+- If it's empty, just say "no content".""",
+        "icebreaker": """We just scraped a series of web pages for a business called . Your task is to take their summaries and turn them into catchy, personalized openers for a cold email campaign to imply that the rest of the campaign is personalized.
+
+You'll return your icebreakers in the following JSON format:
+
+{"icebreaker":"Hey {name}. Love {thing}—also doing/like/a fan of {otherThing}. Wanted to run something by you.\\n\\nI hope you'll forgive me, but I creeped you/your site quite a bit, and know that {anotherThing} is important to you guys (or at least I'm assuming this given the focus on {fourthThing}). I put something together a few months ago that I think could help. To make a long story short, it's an outreach system that uses AI to find people and reseache them, and reach out. Costs just a few cents to run, very high converting, and I think it's in line with {someImpliedBeliefTheyHave}"}
+
+Rules:
+- Write in a spartan/laconic tone of voice.
+- Make sure to use the above format when constructing your icebreakers. We wrote it this way on purpose.
+- Shorten the company name wherever possible (say, "XYZ" instead of "XYZ Agency"). More examples: "Love AMS" instead of "Love AMS Professional Services", "Love Mayo" instead of "Love Mayo Inc.", etc.
+- Do the same with locations. "San Fran" instead of "San Francisco", "BC" instead of "British Columbia", etc.
+- For your variables, focus on small, non-obvious things to paraphrase. The idea is to make people think we *really* dove deep into their website, so don't use something obvious. Do not say cookie-cutter stuff like "Love your website!" or "Love your take on marketing!"."""
+    }
+}
+
+# Pydantic models
+class APIKeys(BaseModel):
+    openai_api_key: Optional[str] = None
+    apify_api_key: Optional[str] = None
+    vapi_api_key: Optional[str] = None
+
+# Phone system models
+class PhoneNumberCreate(BaseModel):
+    phone_number: str
+    caller_name: Optional[str] = None
+    pool_id: Optional[str] = None
+
+class PhoneNumberPoolCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    rotation_strategy: str = "least_used"
+    max_calls_per_number_daily: int = 50
+    max_calls_per_number_hourly: int = 10
+
+class VoiceAssistantCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    system_prompt: str
+    first_message: str
+    voice_provider: str = "elevenlabs"
+    voice_id: Optional[str] = None
+    model: str = "gpt-4"
+    temperature: float = 0.7
+    max_tokens: int = 150
+
+class CallCreate(BaseModel):
+    to_phone_number: str
+    phone_number_id: str
+    voice_assistant_id: str
+    lead_id: Optional[str] = None
+
+# Audience Management Models
+class AudienceCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+
+class AudienceUrlCreate(BaseModel):
+    url: str
+    notes: Optional[str] = None
+
+class WebhookEvent(BaseModel):
+    type: str
+    call: Dict[str, Any]
+    message: Optional[Dict[str, Any]] = None
+    timestamp: Optional[str] = None
+
+class Settings(BaseModel):
+    ai_model_summary: str = "gpt-4o-mini"
+    ai_model_icebreaker: str = "gpt-4o"
+    ai_temperature: float = 0.5
+    delay_between_ai_calls: int = 45
+
+class Prompts(BaseModel):
+    summary: str
+    icebreaker: str
+
+class ContactData(BaseModel):
+    first_name: str
+    last_name: str
+    headline: str = ""
+    location: str = ""
+    website_summaries: List[str] = []
+
+class TestRequest(BaseModel):
+    contact: ContactData
+    custom_prompts: Optional[Prompts] = None
+    use_current_settings: bool = True
+
+# API Endpoints
+@app.get("/")
+async def root():
+    return {"message": "Lead Generation API"}
+
+@app.get("/api-keys")
+async def get_api_keys():
+    # Return masked API keys for security - same as original approach
+    masked_keys = {}
+    
+    # Ensure all expected keys are included
+    expected_keys = ["openai_api_key", "apify_api_key", "vapi_api_key"]
+    
+    for key in expected_keys:
+        value = app_state["api_keys"].get(key)
+        if value:
+            masked_keys[key] = f"{'*' * (len(value) - 8)}{value[-8:]}" if len(value) > 8 else "*" * len(value)
+        else:
+            masked_keys[key] = None
+            
+    return masked_keys
+
+@app.post("/api-keys")
+async def update_api_keys(api_keys: APIKeys):
+    # Update in-memory storage - same as original approach
+    if api_keys.openai_api_key:
+        app_state["api_keys"]["openai_api_key"] = api_keys.openai_api_key
+    if api_keys.apify_api_key:
+        app_state["api_keys"]["apify_api_key"] = api_keys.apify_api_key
+    if api_keys.vapi_api_key:
+        app_state["api_keys"]["vapi_api_key"] = api_keys.vapi_api_key
+    
+    # Save to file for persistence
+    save_api_keys(app_state["api_keys"])
+    
+    return {"message": "API keys updated successfully"}
+
+@app.get("/debug/api-keys")
+async def debug_api_keys():
+    """Debug endpoint to check API key status"""
+    keys_status = {}
+    for key, value in app_state["api_keys"].items():
+        if value:
+            keys_status[key] = {
+                "exists": True,
+                "masked": value.startswith('*'),
+                "length": len(value),
+                "preview": f"{value[:4]}..." if len(value) > 4 else "short"
+            }
+        else:
+            keys_status[key] = {"exists": False}
+    
+    return {
+        "keys_status": keys_status,
+        "file_exists": API_KEYS_FILE.exists(),
+        "file_path": str(API_KEYS_FILE)
+    }
+
+@app.get("/settings")
+async def get_settings():
+    return app_state["settings"]
+
+@app.post("/settings")
+async def update_settings(settings: Settings):
+    app_state["settings"].update(settings.dict())
+    return {"message": "Settings updated successfully"}
+
+@app.get("/prompts")
+async def get_prompts():
+    return app_state["prompts"]
+
+@app.post("/prompts")
+async def update_prompts(prompts: Prompts):
+    app_state["prompts"].update(prompts.dict())
+    return {"message": "Prompts updated successfully"}
+
+@app.post("/test-connection")
+async def test_openai_connection():
+    openai_key = app_state["api_keys"].get("openai_api_key")
+    if not openai_key:
+        raise HTTPException(status_code=400, detail="OpenAI API key not configured")
+    
+    try:
+        # Create a temporary AI processor with the current key
+        ai_processor = AIProcessor(api_key=openai_key)
+        success = ai_processor.test_connection()
+        
+        if success:
+            return {"status": "success", "message": "OpenAI API connection successful"}
+        else:
+            return {"status": "error", "message": "OpenAI API connection failed"}
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Connection test error: {str(e)}")
+
+@app.post("/generate-icebreaker")
+async def generate_icebreaker(request: TestRequest):
+    openai_key = app_state["api_keys"].get("openai_api_key")
+    if not openai_key:
+        raise HTTPException(status_code=400, detail="OpenAI API key not configured")
+    
+    try:
+        # Create AI processor with current key
+        ai_processor = AIProcessor(api_key=openai_key)
+        
+        # Use custom prompts if provided, otherwise use stored prompts
+        if request.custom_prompts:
+            # This would require modifying AIProcessor to accept custom prompts
+            # For now, we'll use the stored prompts and note this limitation
+            prompts_to_use = request.custom_prompts.dict()
+        else:
+            prompts_to_use = app_state["prompts"]
+        
+        # Convert contact data to the format expected by AIProcessor
+        contact_info = {
+            "first_name": request.contact.first_name,
+            "last_name": request.contact.last_name,
+            "headline": request.contact.headline,
+            "location": request.contact.location
+        }
+        
+        # Generate icebreaker
+        icebreaker = ai_processor.generate_icebreaker(
+            contact_info, 
+            request.contact.website_summaries
+        )
+        
+        return {
+            "icebreaker": icebreaker,
+            "contact": contact_info,
+            "prompts_used": prompts_to_use
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Icebreaker generation error: {str(e)}")
+
+@app.get("/sample-data")
+async def get_sample_data():
+    return {
+        "contacts": [
+            {
+                "first_name": "Sarah",
+                "last_name": "Johnson", 
+                "headline": "Marketing Director at TechCorp",
+                "location": "San Francisco, CA",
+                "website_summaries": [
+                    "TechCorp is a B2B SaaS company that provides customer relationship management solutions for small to medium businesses. They focus on automation and integration with popular business tools.",
+                    "Their product suite includes lead tracking, email automation, and analytics dashboards. The company emphasizes user-friendly design and affordable pricing for growing businesses."
+                ]
+            },
+            {
+                "first_name": "Mike",
+                "last_name": "Chen",
+                "headline": "CEO & Founder at GreenTech Solutions", 
+                "location": "Austin, TX",
+                "website_summaries": [
+                    "GreenTech Solutions specializes in sustainable technology consulting for enterprise clients. They help companies reduce carbon footprint through smart energy management systems.",
+                    "The company offers comprehensive sustainability audits, renewable energy integration planning, and ongoing optimization services. They've worked with Fortune 500 companies across various industries."
+                ]
+            },
+            {
+                "first_name": "Lisa",
+                "last_name": "Rodriguez",
+                "headline": "VP of Operations at DataFlow Inc",
+                "location": "New York, NY", 
+                "website_summaries": [
+                    "DataFlow Inc provides cloud-based data processing and analytics solutions for financial services companies. They specialize in real-time data streaming and compliance reporting.",
+                    "Their platform handles millions of transactions daily with enterprise-grade security and regulatory compliance. The company focuses on reducing processing time and improving data accuracy for their clients."
+                ]
+            }
+        ]
+    }
+
+# Vapi Integration Endpoints
+def get_supabase_manager():
+    """Get SupabaseManager instance"""
+    try:
+        return SupabaseManager()
+    except Exception as e:
+        logger.error(f"Failed to initialize SupabaseManager: {str(e)}")
+        raise HTTPException(status_code=500, detail="Database connection failed")
+
+async def get_api_key_from_db(supabase: SupabaseManager, key_name: str, org_id: str = "demo-org-id") -> str:
+    """Helper function to get a specific API key from database"""
+    try:
+        field_name = f"{key_name}_encrypted"
+        result = await supabase.execute_query(
+            f"SELECT {field_name} FROM organizations WHERE id = %s",
+            (org_id,)
+        )
+        if result and result[0].get(field_name):
+            return result[0][field_name]
+    except Exception as e:
+        logger.error(f"Failed to get {key_name} from database: {e}")
+    
+    # Fallback to app_state
+    return app_state["api_keys"].get(key_name)
+
+def get_vapi_service():
+    """Get VapiService instance"""
+    vapi_key = app_state["api_keys"].get("vapi_api_key")
+    logger.info(f"Getting Vapi service. Key exists: {bool(vapi_key)}")
+    
+    if not vapi_key:
+        logger.error("No Vapi API key found when creating service")
+        raise HTTPException(status_code=400, detail="Vapi API key not configured. Please save your Vapi API key in Settings first.")
+    
+    if vapi_key.startswith('*'):
+        logger.error("Vapi API key appears to be masked when creating service")
+        raise HTTPException(status_code=400, detail="Vapi API key appears to be masked. Please re-enter your actual API key.")
+    
+    try:
+        return create_vapi_service(vapi_key)
+    except Exception as e:
+        logger.error(f"Failed to create Vapi service: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to create Vapi service: {str(e)}")
+
+@app.post("/vapi/test-connection")
+async def test_vapi_connection_endpoint():
+    """Test connection to Vapi API"""
+    vapi_key = app_state["api_keys"].get("vapi_api_key")
+    logger.info(f"Testing Vapi connection. Key exists: {bool(vapi_key)}")
+    
+    if not vapi_key:
+        logger.error("No Vapi API key found in app_state")
+        raise HTTPException(status_code=400, detail="Vapi API key not configured. Please save your Vapi API key in the Settings first.")
+    
+    if vapi_key.startswith('*'):
+        logger.error("Vapi API key appears to be masked")
+        raise HTTPException(status_code=400, detail="Vapi API key appears to be masked. Please re-enter your actual API key.")
+    
+    try:
+        result = await test_vapi_connection(vapi_key)
+        logger.info(f"Vapi connection test result: {result}")
+        if not result["success"]:
+            raise HTTPException(status_code=500, detail=result["message"])
+        
+        return result
+    except Exception as e:
+        logger.error(f"Vapi connection test failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Connection test failed: {str(e)}")
+
+# Phone Number Pool Management
+@app.get("/phone-pools")
+async def list_phone_pools():
+    """List phone number pools (simplified demo version)"""
+    try:
+        # Return demo pools for now
+        return {
+            "pools": [
+                {
+                    "id": "demo-pool-1",
+                    "name": "Main Pool",
+                    "rotation_strategy": "round_robin",
+                    "total_numbers": 1,
+                    "active_numbers": 1,
+                    "created_at": "2024-01-15T10:00:00Z"
+                }
+            ]
+        }
+    except Exception as e:
+        logger.error(f"Failed to list phone pools: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve phone pools: {str(e)}")
+
+@app.post("/phone-pools")
+async def create_phone_pool(
+    pool_data: PhoneNumberPoolCreate,
+    supabase: SupabaseManager = Depends(get_supabase_manager)
+):
+    """Create a new phone number pool"""
+    try:
+        # TODO: Add organization context
+        org_id = "demo-org-id"  # This should come from authentication context
+        
+        pool_id = await supabase.execute_query(
+            """
+            INSERT INTO phone_number_pools (
+                organization_id, name, description, rotation_strategy,
+                max_calls_per_number_daily, max_calls_per_number_hourly
+            ) VALUES (%s, %s, %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (
+                org_id,
+                pool_data.name,
+                pool_data.description,
+                pool_data.rotation_strategy,
+                pool_data.max_calls_per_number_daily,
+                pool_data.max_calls_per_number_hourly
+            )
+        )
+        
+        return {"pool_id": pool_id[0]["id"], "message": "Phone pool created successfully"}
+    except Exception as e:
+        logger.error(f"Failed to create phone pool: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to create phone pool")
+
+# Phone Number Management
+@app.get("/phone-numbers")
+async def list_phone_numbers(supabase: SupabaseManager = Depends(get_supabase_manager)):
+    """List all phone numbers for current organization"""
+    try:
+        # TODO: Add organization context
+        org_id = "demo-org-id"  # This should come from authentication context
+        
+        numbers = await supabase.execute_query(
+            """
+            SELECT pn.*, pnp.name as pool_name
+            FROM phone_numbers pn
+            LEFT JOIN phone_number_pools pnp ON pn.pool_id = pnp.id
+            WHERE pn.organization_id = %s
+            ORDER BY pn.created_at DESC
+            """,
+            (org_id,)
+        )
+        
+        return {"phone_numbers": numbers}
+    except Exception as e:
+        logger.error(f"Failed to list phone numbers: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve phone numbers")
+
+@app.post("/phone-numbers/sync")
+async def sync_vapi_numbers(vapi: VapiService = Depends(get_vapi_service)):
+    """Sync phone numbers from Vapi (simplified version without database)"""
+    try:
+        # For now, just test the Vapi connection and return the numbers
+        phone_numbers = await vapi.list_phone_numbers()
+        assistants = await vapi.list_assistants()
+        
+        return {
+            "message": f"Successfully connected to Vapi! Found {len(phone_numbers)} phone numbers and {len(assistants)} assistants",
+            "phone_numbers": [{"id": pn.id, "number": pn.number} for pn in phone_numbers],
+            "assistants": [{"id": a.id, "name": a.name} for a in assistants],
+            "synced_count": len(phone_numbers)
+        }
+    except Exception as e:
+        logger.error(f"Failed to sync Vapi numbers: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to sync phone numbers: {str(e)}")
+
+@app.post("/phone-numbers")
+async def add_phone_number(
+    number_data: PhoneNumberCreate,
+    supabase: SupabaseManager = Depends(get_supabase_manager),
+    vapi: VapiService = Depends(get_vapi_service)
+):
+    """Add a new phone number to Vapi and local database"""
+    try:
+        # TODO: Add organization context
+        org_id = "demo-org-id"  # This should come from authentication context
+        
+        # Create phone number in Vapi first
+        vapi_number = await vapi.create_phone_number(
+            number=number_data.phone_number,
+            name=number_data.caller_name
+        )
+        
+        # Add to local database
+        await supabase.execute_query(
+            """
+            INSERT INTO phone_numbers (
+                organization_id, pool_id, vapi_phone_number_id, phone_number,
+                caller_name, status
+            ) VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            (
+                org_id,
+                number_data.pool_id,
+                vapi_number.id,
+                vapi_number.number,
+                number_data.caller_name or vapi_number.name,
+                'active'
+            )
+        )
+        
+        return {
+            "message": "Phone number added successfully",
+            "vapi_id": vapi_number.id,
+            "number": vapi_number.number
+        }
+    except Exception as e:
+        logger.error(f"Failed to add phone number: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to add phone number")
+
+# Voice Assistant Management
+@app.get("/voice-assistants")
+async def list_voice_assistants(supabase: SupabaseManager = Depends(get_supabase_manager)):
+    """List all voice assistants for current organization"""
+    try:
+        # TODO: Add organization context
+        org_id = "demo-org-id"  # This should come from authentication context
+        
+        assistants = await supabase.execute_query(
+            """
+            SELECT * FROM voice_assistants
+            WHERE organization_id = %s
+            ORDER BY created_at DESC
+            """,
+            (org_id,)
+        )
+        
+        return {"voice_assistants": assistants}
+    except Exception as e:
+        logger.error(f"Failed to list voice assistants: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve voice assistants")
+
+@app.post("/voice-assistants")
+async def create_voice_assistant(
+    assistant_data: VoiceAssistantCreate,
+    supabase: SupabaseManager = Depends(get_supabase_manager),
+    vapi: VapiService = Depends(get_vapi_service)
+):
+    """Create a new voice assistant"""
+    try:
+        # TODO: Add organization context
+        org_id = "demo-org-id"  # This should come from authentication context
+        
+        # Create assistant in Vapi
+        vapi_assistant = await vapi.create_assistant(
+            name=assistant_data.name,
+            first_message=assistant_data.first_message,
+            system_prompt=assistant_data.system_prompt,
+            model={
+                "provider": "openai",
+                "model": assistant_data.model,
+                "temperature": assistant_data.temperature,
+                "maxTokens": assistant_data.max_tokens
+            },
+            voice={
+                "provider": assistant_data.voice_provider,
+                "voiceId": assistant_data.voice_id or "21m00Tcm4TlvDq8ikWAM"
+            }
+        )
+        
+        # Save to local database
+        assistant_id = await supabase.execute_query(
+            """
+            INSERT INTO voice_assistants (
+                organization_id, vapi_assistant_id, name, description,
+                system_prompt, first_message, voice_provider, voice_id,
+                model, temperature, max_tokens, status
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (
+                org_id,
+                vapi_assistant.id,
+                assistant_data.name,
+                assistant_data.description,
+                assistant_data.system_prompt,
+                assistant_data.first_message,
+                assistant_data.voice_provider,
+                assistant_data.voice_id,
+                assistant_data.model,
+                assistant_data.temperature,
+                assistant_data.max_tokens,
+                'active'
+            )
+        )
+        
+        return {
+            "message": "Voice assistant created successfully",
+            "assistant_id": assistant_id[0]["id"],
+            "vapi_id": vapi_assistant.id
+        }
+    except Exception as e:
+        logger.error(f"Failed to create voice assistant: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to create voice assistant")
+
+# Call Management
+@app.post("/calls")
+async def create_call(
+    call_data: CallCreate,
+    supabase: SupabaseManager = Depends(get_supabase_manager),
+    vapi: VapiService = Depends(get_vapi_service)
+):
+    """Create an outbound call"""
+    try:
+        # TODO: Add organization context
+        org_id = "demo-org-id"  # This should come from authentication context
+        
+        # Get phone number and assistant details
+        phone_number = await supabase.execute_query(
+            "SELECT vapi_phone_number_id FROM phone_numbers WHERE id = %s AND organization_id = %s",
+            (call_data.phone_number_id, org_id)
+        )
+        
+        assistant = await supabase.execute_query(
+            "SELECT vapi_assistant_id FROM voice_assistants WHERE id = %s AND organization_id = %s",
+            (call_data.voice_assistant_id, org_id)
+        )
+        
+        if not phone_number or not assistant:
+            raise HTTPException(status_code=404, detail="Phone number or assistant not found")
+        
+        # Create call in Vapi
+        vapi_call = await vapi.create_call(
+            phone_number_id=phone_number[0]["vapi_phone_number_id"],
+            customer_number=call_data.to_phone_number,
+            assistant_id=assistant[0]["vapi_assistant_id"]
+        )
+        
+        # Log call in database
+        call_id = await supabase.execute_query(
+            """
+            INSERT INTO phone_call_logs (
+                organization_id, phone_number_id, voice_assistant_id, lead_id,
+                vapi_call_id, to_phone_number, from_phone_number, status
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (
+                org_id,
+                call_data.phone_number_id,
+                call_data.voice_assistant_id,
+                call_data.lead_id,
+                vapi_call.id,
+                call_data.to_phone_number,
+                vapi_call.customer.get("number", ""),
+                vapi_call.status
+            )
+        )
+        
+        return {
+            "message": "Call initiated successfully",
+            "call_id": call_id[0]["id"],
+            "vapi_call_id": vapi_call.id,
+            "status": vapi_call.status
+        }
+    except Exception as e:
+        logger.error(f"Failed to create call: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to initiate call")
+
+@app.get("/calls")
+async def list_calls(supabase: SupabaseManager = Depends(get_supabase_manager)):
+    """List recent calls for current organization"""
+    try:
+        # TODO: Add organization context
+        org_id = "demo-org-id"  # This should come from authentication context
+        
+        calls = await supabase.execute_query(
+            """
+            SELECT pcl.*, 
+                   pn.phone_number,
+                   va.name as assistant_name
+            FROM phone_call_logs pcl
+            LEFT JOIN phone_numbers pn ON pcl.phone_number_id = pn.id
+            LEFT JOIN voice_assistants va ON pcl.voice_assistant_id = va.id
+            WHERE pcl.organization_id = %s
+            ORDER BY pcl.created_at DESC
+            LIMIT 50
+            """,
+            (org_id,)
+        )
+        
+        return {"calls": calls}
+    except Exception as e:
+        logger.error(f"Failed to list calls: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve calls")
+
+# Webhook endpoint for Vapi events
+@app.post("/webhooks/vapi")
+async def handle_vapi_webhook(
+    request: Request,
+    supabase: SupabaseManager = Depends(get_supabase_manager)
+):
+    """Handle webhooks from Vapi for call events"""
+    try:
+        # Get raw payload for signature verification
+        payload = await request.body()
+        signature = request.headers.get("x-vapi-signature", "")
+        
+        # TODO: Verify webhook signature with your webhook secret
+        # webhook_secret = os.getenv("VAPI_WEBHOOK_SECRET")
+        # if not verify_signature(payload, signature, webhook_secret):
+        #     raise HTTPException(status_code=401, detail="Invalid signature")
+        
+        # Parse webhook event
+        event_data = json.loads(payload.decode())
+        
+        # Handle different event types
+        event_type = event_data.get("type")
+        call_data = event_data.get("call", {})
+        vapi_call_id = call_data.get("id")
+        
+        if not vapi_call_id:
+            return {"status": "ignored", "reason": "No call ID"}
+        
+        # Update call status in database
+        if event_type in ["call.started", "call.ended", "call.failed"]:
+            update_data = {
+                "status": call_data.get("status", "unknown"),
+                "updated_at": datetime.now(timezone.utc)
+            }
+            
+            if event_type == "call.started":
+                update_data["answered_at"] = datetime.now(timezone.utc)
+                update_data["answered"] = True
+            elif event_type == "call.ended":
+                update_data["ended_at"] = datetime.now(timezone.utc)
+                update_data["duration_seconds"] = call_data.get("duration", 0)
+                update_data["cost"] = call_data.get("cost", 0)
+                update_data["completed_successfully"] = True
+                
+                # Update phone number metrics
+                if call_data.get("phoneNumberId"):
+                    phone_number = await supabase.execute_query(
+                        "SELECT id FROM phone_numbers WHERE vapi_phone_number_id = %s",
+                        (call_data["phoneNumberId"],)
+                    )
+                    
+                    if phone_number:
+                        await supabase.execute_query(
+                            "SELECT update_phone_number_metrics(%s, %s, %s)",
+                            (
+                                phone_number[0]["id"],
+                                update_data.get("answered", False),
+                                update_data.get("duration_seconds", 0)
+                            )
+                        )
+            elif event_type == "call.failed":
+                update_data["error_message"] = call_data.get("error", "Call failed")
+            
+            # Update call log
+            await supabase.execute_query(
+                """
+                UPDATE phone_call_logs 
+                SET status = %s, updated_at = %s, 
+                    answered_at = COALESCE(%s, answered_at),
+                    ended_at = COALESCE(%s, ended_at),
+                    duration_seconds = COALESCE(%s, duration_seconds),
+                    cost = COALESCE(%s, cost),
+                    answered = COALESCE(%s, answered),
+                    completed_successfully = COALESCE(%s, completed_successfully),
+                    error_message = COALESCE(%s, error_message)
+                WHERE vapi_call_id = %s
+                """,
+                (
+                    update_data["status"],
+                    update_data["updated_at"],
+                    update_data.get("answered_at"),
+                    update_data.get("ended_at"),
+                    update_data.get("duration_seconds"),
+                    update_data.get("cost"),
+                    update_data.get("answered"),
+                    update_data.get("completed_successfully"),
+                    update_data.get("error_message"),
+                    vapi_call_id
+                )
+            )
+        
+        logger.info(f"Processed Vapi webhook: {event_type} for call {vapi_call_id}")
+        return {"status": "processed", "event_type": event_type}
+        
+    except Exception as e:
+        logger.error(f"Failed to process Vapi webhook: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to process webhook")
+
+# Campaign Management Endpoints
+@app.get("/campaigns")
+async def list_campaigns():
+    """List all campaigns available for phone calls"""
+    # For now, return mock campaigns. In a real implementation, 
+    # this would query the database for actual campaigns
+    return {
+        "campaigns": [
+            {
+                "id": "demo-campaign-1",
+                "name": "Demo Campaign - Tech Startups",
+                "description": "Sample campaign targeting tech startups",
+                "created_at": "2024-01-15T10:00:00Z",
+                "lead_count": 150,
+                "status": "active"
+            },
+            {
+                "id": "demo-campaign-2", 
+                "name": "Demo Campaign - Marketing Agencies",
+                "description": "Sample campaign targeting marketing agencies",
+                "created_at": "2024-01-20T14:30:00Z",
+                "lead_count": 89,
+                "status": "active"
+            }
+        ]
+    }
+
+# Phone Campaign Endpoints (similar to email campaigns)
+@app.get("/campaigns/{campaign_id}/leads")
+async def get_campaign_leads(
+    campaign_id: str,
+    supabase: SupabaseManager = Depends(get_supabase_manager)
+):
+    """Get leads from a campaign for phone calling"""
+    try:
+        # TODO: Add organization context
+        org_id = "demo-org-id"
+        
+        leads = await supabase.execute_query(
+            """
+            SELECT pl.*, pcl.status as phone_call_status, pcl.created_at as last_called_at,
+                   COUNT(pcl.id) as call_attempts
+            FROM processed_leads pl
+            LEFT JOIN phone_call_logs pcl ON pl.id = pcl.lead_id
+            WHERE pl.campaign_id = %s AND pl.organization_id = %s
+            GROUP BY pl.id, pcl.status, pcl.created_at
+            ORDER BY pl.created_at DESC
+            """,
+            (campaign_id, org_id)
+        )
+        
+        return {"leads": leads}
+    except Exception as e:
+        logger.error(f"Failed to get campaign leads: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve campaign leads")
+
+@app.get("/campaigns/{campaign_id}/phone-leads")
+async def get_campaign_phone_leads(
+    campaign_id: str,
+    hasPhoneNumber: bool = False,
+    notCalled: bool = False,
+    limit: int = 1000,
+    supabase: SupabaseManager = Depends(get_supabase_manager)
+):
+    """Get leads from a campaign filtered for phone calling"""
+    try:
+        # TODO: Add organization context
+        org_id = "demo-org-id"
+        
+        # Build query with filters
+        query = """
+            SELECT pl.*, pcl.status as phone_call_status, pcl.created_at as last_called_at,
+                   COUNT(pcl.id) as call_attempts
+            FROM processed_leads pl
+            LEFT JOIN phone_call_logs pcl ON pl.id = pcl.lead_id
+            WHERE pl.campaign_id = %s AND pl.organization_id = %s
+        """
+        params = [campaign_id, org_id]
+        
+        if hasPhoneNumber:
+            query += " AND (pl.phone IS NOT NULL AND pl.phone != '')"
+        
+        if notCalled:
+            query += " AND pcl.id IS NULL"
+        
+        query += """
+            GROUP BY pl.id, pcl.status, pcl.created_at
+            ORDER BY pl.created_at DESC
+            LIMIT %s
+        """
+        params.append(limit)
+        
+        leads = await supabase.execute_query(query, params)
+        
+        return {"leads": leads}
+    except Exception as e:
+        logger.error(f"Failed to get phone leads: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve phone leads")
+
+@app.post("/run-phone-campaign")
+async def run_phone_campaign(
+    request: dict,
+    supabase: SupabaseManager = Depends(get_supabase_manager)
+):
+    """Start a phone campaign for selected leads"""
+    try:
+        # TODO: Add organization context
+        org_id = "demo-org-id"
+        
+        campaign_id = request.get("campaignId")
+        phone_pool_id = request.get("phonePoolId") 
+        assistant_id = request.get("assistantId")
+        max_calls = request.get("maxCalls", 50)
+        calls_per_hour = request.get("callsPerHour", 10)
+        
+        if not all([campaign_id, phone_pool_id, assistant_id]):
+            raise HTTPException(status_code=400, detail="Missing required parameters")
+        
+        # Get leads from the campaign that have phone numbers and haven't been called recently
+        leads = await supabase.execute_query(
+            """
+            SELECT pl.id, pl.phone, pl.first_name, pl.last_name
+            FROM processed_leads pl
+            LEFT JOIN phone_call_logs pcl ON pl.id = pcl.lead_id 
+                AND pcl.created_at > NOW() - INTERVAL '24 hours'
+            WHERE pl.campaign_id = %s 
+                AND pl.organization_id = %s
+                AND pl.phone IS NOT NULL 
+                AND pl.phone != ''
+                AND pcl.id IS NULL
+            LIMIT %s
+            """,
+            (campaign_id, org_id, max_calls)
+        )
+        
+        if not leads:
+            return {"message": "No eligible leads found for calling", "calls_initiated": 0}
+        
+        # Create a campaign execution record (you might want to add this table)
+        # For now, we'll just initiate calls directly
+        
+        calls_initiated = 0
+        for lead in leads:
+            try:
+                # Get next available phone number from pool
+                phone_result = await supabase.execute_query(
+                    "SELECT * FROM get_next_phone_number(%s, %s)",
+                    (org_id, phone_pool_id)
+                )
+                
+                if not phone_result:
+                    logger.warning(f"No available phone numbers in pool {phone_pool_id}")
+                    break
+                
+                phone_info = phone_result[0]
+                
+                # Log the call attempt (would normally initiate actual call via Vapi here)
+                await supabase.execute_query(
+                    """
+                    INSERT INTO phone_call_logs (
+                        organization_id, phone_number_id, voice_assistant_id, lead_id,
+                        to_phone_number, from_phone_number, status
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        org_id,
+                        phone_info["phone_number_id"],
+                        assistant_id,
+                        lead["id"],
+                        lead["phone"],
+                        phone_info["phone_number"],
+                        'initiated'
+                    )
+                )
+                
+                calls_initiated += 1
+                
+                # Respect rate limit
+                if calls_initiated >= calls_per_hour:
+                    break
+                    
+            except Exception as call_error:
+                logger.error(f"Failed to initiate call for lead {lead['id']}: {str(call_error)}")
+                continue
+        
+        return {
+            "message": f"Phone campaign started successfully", 
+            "calls_initiated": calls_initiated,
+            "total_leads": len(leads)
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to run phone campaign: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to start phone campaign")
+
+# In-memory storage for created audiences (temporary solution)
+created_audiences = []
+
+# Audience Management Endpoints
+@app.get("/audiences")
+async def get_audiences():
+    """Get all audiences for the current organization - with memory storage"""
+    try:
+        # Return only the audiences the user has created
+        return {"audiences": created_audiences}
+    except Exception as e:
+        logger.error(f"Failed to get audiences: {str(e)}")
+        return {"audiences": []}
+
+@app.post("/audiences")
+async def create_audience(audience_data: AudienceCreate):
+    """Create a new audience - simplified version"""
+    try:
+        # For now, return a success response to test the frontend
+        # TODO: Replace with actual Supabase insert when DB is ready
+        import time
+        from datetime import datetime
+        new_audience = {
+            "id": f"audience-{int(time.time())}",  # Simple ID generation
+            "organization_id": "demo-org-1",
+            "name": audience_data.name,
+            "description": audience_data.description,
+            "total_urls": 0,
+            "estimated_contacts": 0,
+            "status": "pending",
+            "scraping_progress": 0,
+            "created_at": datetime.now().isoformat() + "Z",
+            "updated_at": datetime.now().isoformat() + "Z"
+        }
+        
+        # ADD TO THE IN-MEMORY LIST
+        created_audiences.append(new_audience)
+        
+        logger.info(f"Created demo audience: {audience_data.name}")
+        return {"audience": new_audience}
+    except Exception as e:
+        logger.error(f"Failed to create audience: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to create audience")
+
+@app.get("/audiences/{audience_id}/urls")
+async def get_audience_urls(audience_id: str):
+    """Get URLs for an audience - simplified version"""
+    return {"urls": []}
+
+@app.post("/audiences/{audience_id}/urls") 
+async def add_url_to_audience(audience_id: str, url_data: AudienceUrlCreate):
+    """Add URL to audience - simplified version"""
+    logger.info(f"Added URL to audience {audience_id}: {url_data.url}")
+    return {"message": "URL added to audience successfully"}
+
+@app.post("/audiences/{audience_id}/scrape")
+async def scrape_audience(audience_id: str):
+    """Start scraping - simplified version"""
+    logger.info(f"Started scraping for audience {audience_id}")
+    return {"message": "Scraping started for audience"}
+
+@app.delete("/audiences/{audience_id}")
+async def delete_audience(audience_id: str):
+    """Delete audience - simplified version"""
+    global created_audiences
+    # Remove from in-memory list
+    created_audiences = [aud for aud in created_audiences if aud["id"] != audience_id]
+    logger.info(f"Deleted audience {audience_id}")
+    return {"message": "Audience deleted successfully"}
+
+@app.get("/audiences/{audience_id}/contacts")
+async def get_audience_contacts(audience_id: str):
+    """Get contacts for audience - simplified version"""
+    return {"contacts": []}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
