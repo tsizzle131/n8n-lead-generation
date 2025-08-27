@@ -55,7 +55,7 @@ const STATE_FILE = path.join(__dirname, '.app-state.json');
 // Load state from file if it exists
 let appState = {
   // Multi-tenant state
-  currentOrganization: null, // Selected organization
+  currentOrganization: 'c0edb679-2d38-4500-9c4b-05ed1476563c', // Selected organization
   organizations: {}, // Cache of organization data
   apiKeys: {}, // Global admin API keys (fallback)
   settings: {
@@ -1812,7 +1812,8 @@ app.post('/campaigns/:id/urls', async (req, res) => {
         url: url.trim(),
         notes: notes || null,
         campaign_id: id,
-        status: 'pending'
+        status: 'pending',
+        organization_id: appState.currentOrganization
       })
     });
 
@@ -1879,6 +1880,13 @@ app.post('/run-script', (req, res) => {
   currentExecution.status = 'starting';
 
   console.log(`🚀 Starting script execution in ${mode} mode`);
+  console.log(`📋 Script parameters:`, {
+    mode,
+    campaignId,
+    recordCount,
+    testUrl,
+    organization: appState.currentOrganization
+  });
 
   try {
     const scriptPath = path.join(__dirname, 'lead_generation', 'main.py');
@@ -1887,10 +1895,13 @@ app.post('/run-script', (req, res) => {
     // Add mode-specific arguments
     if (mode === 'test') {
       args.push('test');
+      console.log('🧪 Running in test mode');
     } else if (mode === 'once') {
       args.push('once');
+      console.log('🔄 Running once mode');
     } else if (mode === 'campaign' && campaignId) {
       args.push('campaign');
+      console.log(`🎯 Running campaign mode for campaign: ${campaignId}`);
     }
 
     // Set up environment variables including record count and organization context
@@ -1904,23 +1915,33 @@ app.post('/run-script', (req, res) => {
       scriptEnv.CURRENT_ORGANIZATION_ID = appState.currentOrganization;
       console.log(`🏢 Running script in organization context: ${appState.currentOrganization}`);
     } else {
-      console.log('⚠️ No organization context - running in global mode');
+      console.log('⚠️ WARNING: No organization context - this may cause issues!');
     }
     
     // Add record count if provided
     if (recordCount) {
       scriptEnv.RECORD_COUNT = recordCount.toString();
+      console.log(`📊 Record count set to: ${recordCount}`);
     }
     
     // Add test URL if provided
     if (testUrl) {
       scriptEnv.TEST_APOLLO_URL = testUrl;
+      console.log(`🔗 Test URL provided: ${testUrl.substring(0, 50)}...`);
     }
     
     // Add campaign ID if provided
     if (campaignId) {
       scriptEnv.CAMPAIGN_ID = campaignId;
+      console.log(`🎯 Campaign ID environment variable set: ${campaignId}`);
     }
+    
+    console.log('🐍 Executing Python script with environment:', {
+      CURRENT_ORGANIZATION_ID: scriptEnv.CURRENT_ORGANIZATION_ID,
+      CAMPAIGN_ID: scriptEnv.CAMPAIGN_ID,
+      RECORD_COUNT: scriptEnv.RECORD_COUNT,
+      hasTestUrl: !!scriptEnv.TEST_APOLLO_URL
+    });
     
     const scriptProcess = spawn(pythonCmd, args, {
       cwd: path.join(__dirname, 'lead_generation'),
