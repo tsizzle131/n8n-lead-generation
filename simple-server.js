@@ -433,6 +433,136 @@ app.get('/sample-data', (req, res) => {
   });
 });
 
+// Export icebreakers endpoint
+app.get('/export-icebreakers', async (req, res) => {
+  const { campaign_id, filename, download } = req.query;
+  const supabaseUrl = appState.supabase?.url;
+  const supabaseKey = appState.supabase?.key;
+  
+  if (!supabaseUrl || !supabaseKey) {
+    return res.status(400).json({ error: 'Supabase not configured' });
+  }
+
+  try {
+    const cleanUrl = supabaseUrl.replace(/\/+$/, '');
+    
+    let audienceFilter = '';
+    let campaignName = 'All Campaigns';
+    
+    // If campaign_id is provided, get the audience_id from the campaign
+    if (campaign_id) {
+      const campaignResponse = await fetch(`${cleanUrl}/rest/v1/campaigns?id=eq.${campaign_id}&select=name,audience_id`, {
+        method: 'GET',
+        headers: {
+          'apikey': supabaseKey,
+          'Authorization': `Bearer ${supabaseKey}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      
+      if (!campaignResponse.ok) {
+        throw new Error(`Failed to fetch campaign: ${campaignResponse.statusText}`);
+      }
+      
+      const campaigns = await campaignResponse.json();
+      if (!campaigns || campaigns.length === 0) {
+        return res.json({ error: 'Campaign not found', count: 0, data: [] });
+      }
+      
+      const campaign = campaigns[0];
+      campaignName = campaign.name;
+      
+      if (!campaign.audience_id) {
+        return res.json({ error: `Campaign "${campaignName}" has no assigned audience`, count: 0, data: [] });
+      }
+      
+      audienceFilter = `&audience_id=eq.${campaign.audience_id}`;
+    }
+    
+    const response = await fetch(`${cleanUrl}/rest/v1/raw_contacts?select=name,email,linkedin_url,title,headline,mutiline_icebreaker,scraped_at,audience_id&mutiline_icebreaker=not.is.null${audienceFilter}&order=name.asc`, {
+      method: 'GET',
+      headers: {
+        'apikey': supabaseKey,
+        'Authorization': `Bearer ${supabaseKey}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch contacts: ${response.statusText}`);
+    }
+
+    const contacts = await response.json();
+    
+    if (!contacts || contacts.length === 0) {
+      return res.json({ error: 'No icebreakers found', count: 0, data: [] });
+    }
+
+    // Format for CSV export
+    const csvData = contacts.map(contact => ({
+      name: contact.name || '',
+      email: contact.email || '',
+      linkedin_url: contact.linkedin_url || '',
+      title: contact.title || '',
+      headline: contact.headline || '',
+      icebreaker: contact.mutiline_icebreaker || '',
+      scraped_at: contact.scraped_at || ''
+    }));
+
+    // Check if client wants CSV download directly
+    if (req.query.format === 'csv') {
+      const csvHeaders = ['name', 'email', 'linkedin_url', 'title', 'headline', 'icebreaker', 'scraped_at'];
+      const csvContent = [
+        csvHeaders.join(','),
+        ...csvData.map(row => 
+          csvHeaders.map(header => `"${(row[header] || '').toString().replace(/"/g, '""')}"`).join(',')
+        )
+      ].join('\r\n'); // Use Windows line endings for better compatibility
+      
+      const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
+      const exportFilename = filename || (campaignName === 'All Campaigns' 
+        ? `icebreakers_export_${timestamp}.csv`
+        : `icebreakers_export_${campaignName.replace(/[^a-zA-Z0-9]/g, '_')}_${timestamp}.csv`);
+      
+      // Add UTF-8 BOM for better Excel compatibility
+      const bom = '\uFEFF';
+      const csvWithBom = bom + csvContent;
+      
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="${exportFilename}"`);
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+      res.setHeader('Content-Transfer-Encoding', 'binary');
+      
+      // Additional headers to force download behavior
+      if (download) {
+        console.log('Download parameter detected, setting enhanced headers for:', exportFilename);
+        res.setHeader('X-Suggested-Filename', exportFilename);
+        res.setHeader('Content-Disposition', `attachment; filename="${exportFilename}"; filename*=UTF-8''${encodeURIComponent(exportFilename)}`);
+        res.setHeader('X-Download-Options', 'noopen');
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+      }
+      
+      res.setHeader('Content-Length', Buffer.byteLength(csvWithBom, 'utf8'));
+      res.send(csvWithBom);
+      return;
+    }
+    
+    res.json({
+      success: true,
+      count: contacts.length,
+      data: csvData,
+      campaign: campaignName,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (err) {
+    console.error('Export error:', err);
+    res.status(500).json({ error: 'Failed to export icebreakers: ' + err.message });
+  }
+});
+
 // Multi-tenant Organization Management endpoints
 app.get('/organizations', async (req, res) => {
   const supabaseUrl = appState.supabase?.url;
@@ -937,7 +1067,7 @@ app.get('/audiences', async (req, res) => {
   try {
     // Try Supabase first, fallback to in-memory if table doesn't exist
     const cleanUrl = supabaseUrl.replace(/\/+$/, '');
-    const response = await fetch(`${cleanUrl}/rest/v1/target_audiences?organization_id=eq.${organizationId}&select=*&order=created_at.desc`, {
+    const response = await fetch(`${cleanUrl}/rest/v1/audiences?organization_id=eq.${organizationId}&select=*&order=created_at.desc`, {
       method: 'GET',
       headers: {
         'apikey': supabaseKey,
@@ -948,10 +1078,82 @@ app.get('/audiences', async (req, res) => {
 
     if (response.ok) {
       const audiences = await response.json();
-      res.json({ audiences });
+      
+      // For each audience, get the actual contact count from raw_contacts
+      const enrichedAudiences = await Promise.all(audiences.map(async (audience) => {
+        try {
+          // Use proper audience_id column for counting (much faster)
+          const contactCountResponse = await fetch(`${cleanUrl}/rest/v1/raw_contacts?audience_id=eq.${audience.id}&select=id&count=exact`, {
+            method: 'GET',
+            headers: {
+              'apikey': supabaseKey,
+              'Authorization': `Bearer ${supabaseKey}`,
+              'Content-Type': 'application/json',
+              'Prefer': 'count=exact'
+            }
+          });
+          
+          if (contactCountResponse.ok) {
+            const countHeader = contactCountResponse.headers.get('Content-Range');
+            const totalCount = countHeader ? parseInt(countHeader.split('/')[1]) || 0 : 0;
+            
+            console.log(`Audience ${audience.id} (${audience.name}) has ${totalCount} contacts`);
+            
+            return {
+              ...audience,
+              estimated_contacts: totalCount,
+              actual_contacts: totalCount
+            };
+          }
+        } catch (error) {
+          console.log(`Could not get contact count for audience ${audience.id}:`, error);
+          
+          // Fallback to temporary JSON method if column doesn't exist yet
+          try {
+            const contactsResponse = await fetch(`${cleanUrl}/rest/v1/raw_contacts?select=raw_data_json`, {
+              method: 'GET',
+              headers: {
+                'apikey': supabaseKey,
+                'Authorization': `Bearer ${supabaseKey}`,
+                'Content-Type': 'application/json'
+              }
+            });
+            
+            if (contactsResponse.ok) {
+              const contacts = await contactsResponse.json();
+              let audienceContactCount = 0;
+              
+              for (const contact of contacts) {
+                const rawData = contact.raw_data_json || {};
+                if (rawData._audience_id === audience.id) {
+                  audienceContactCount++;
+                }
+              }
+              
+              console.log(`Audience ${audience.id} has ${audienceContactCount} contacts (fallback method)`);
+              
+              return {
+                ...audience,
+                estimated_contacts: audienceContactCount,
+                actual_contacts: audienceContactCount
+              };
+            }
+          } catch (fallbackError) {
+            console.log(`Fallback counting also failed for audience ${audience.id}:`, fallbackError);
+          }
+        }
+        
+        return {
+          ...audience,
+          estimated_contacts: 0,
+          actual_contacts: 0
+        };
+      }));
+      
+      res.json({ audiences: enrichedAudiences });
     } else {
       // Fallback to in-memory storage
-      console.log('Supabase target_audiences table not found, using in-memory storage');
+      console.log('Supabase audiences table not found, using in-memory storage');
       const filteredAudiences = inMemoryAudiences.filter(aud => aud.organization_id === organizationId);
       res.json({ audiences: filteredAudiences });
     }
@@ -984,7 +1186,7 @@ app.post('/audiences', async (req, res) => {
   try {
     // Try Supabase first, fallback to in-memory if table doesn't exist
     const cleanUrl = supabaseUrl.replace(/\/+$/, '');
-    const response = await fetch(`${cleanUrl}/rest/v1/target_audiences`, {
+    const response = await fetch(`${cleanUrl}/rest/v1/audiences`, {
       method: 'POST',
       headers: {
         'apikey': supabaseKey,
@@ -1007,9 +1209,9 @@ app.post('/audiences', async (req, res) => {
       res.json({ audience: audience[0] });
     } else {
       // Fallback to in-memory storage
-      console.log('Supabase target_audiences table not found, creating in memory');
+      console.log('Supabase audiences table not found, creating in memory');
       const newAudience = {
-        id: `audience-${Date.now()}`,
+        id: crypto.randomUUID(),
         name: name.trim(),
         description: description || null,
         apollo_search_url: apollo_search_url || null,
@@ -1068,7 +1270,7 @@ app.put('/audiences/:id', async (req, res) => {
     if (status !== undefined) updateData.status = status;
 
     const cleanUrl = supabaseUrl.replace(/\/+$/, '');
-    const response = await fetch(`${cleanUrl}/rest/v1/target_audiences?id=eq.${id}`, {
+    const response = await fetch(`${cleanUrl}/rest/v1/audiences?id=eq.${id}`, {
       method: 'PATCH',
       headers: {
         'apikey': supabaseKey,
@@ -1102,7 +1304,7 @@ app.delete('/audiences/:id', async (req, res) => {
 
   try {
     const cleanUrl = supabaseUrl.replace(/\/+$/, '');
-    const response = await fetch(`${cleanUrl}/rest/v1/target_audiences?id=eq.${id}`, {
+    const response = await fetch(`${cleanUrl}/rest/v1/audiences?id=eq.${id}`, {
       method: 'DELETE',
       headers: {
         'apikey': supabaseKey,
@@ -1183,6 +1385,7 @@ app.post('/audiences/:id/urls', async (req, res) => {
         url: url.trim(),
         notes: notes || null,
         audience_id: id,
+        organization_id: appState.currentOrganization,
         status: 'pending',
         total_contacts: 0
       })
@@ -1234,11 +1437,154 @@ app.delete('/audiences/:audienceId/urls/:urlId', async (req, res) => {
 // Audience scraping endpoint
 app.post('/audiences/:id/scrape', async (req, res) => {
   const { id } = req.params;
+  const { recordCount } = req.body;
+  const supabaseUrl = appState.supabase?.url;
+  const supabaseKey = appState.supabase?.key;
   
-  // For now, this is a placeholder - you'd implement actual scraping logic here
-  // This could integrate with your existing script execution system
+  if (!supabaseUrl || !supabaseKey) {
+    return res.status(400).json({ error: 'Supabase not configured' });
+  }
+  
+  if (currentExecution.isRunning) {
+    return res.status(400).json({ 
+      error: 'Script is already running', 
+      currentMode: currentExecution.mode,
+      startTime: currentExecution.startTime 
+    });
+  }
+  
   try {
-    res.json({ message: 'Scraping started for audience (placeholder)' });
+    // Get the URLs from this audience
+    const cleanUrl = supabaseUrl.replace(/\/+$/, '');
+    const urlsResponse = await fetch(`${cleanUrl}/rest/v1/audience_urls?audience_id=eq.${id}&select=*&order=created_at.desc`, {
+      method: 'GET',
+      headers: {
+        'apikey': supabaseKey,
+        'Authorization': `Bearer ${supabaseKey}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    if (!urlsResponse.ok) {
+      throw new Error(`Failed to get audience URLs: HTTP ${urlsResponse.status}`);
+    }
+
+    const urls = await urlsResponse.json();
+    
+    if (urls.length === 0) {
+      return res.status(400).json({ error: 'No URLs found in this audience' });
+    }
+
+    console.log(`🎯 Starting audience scraping for ${urls.length} URLs`);
+    
+    // Use the first URL for now (in the future, you might want to process multiple URLs)
+    const firstUrl = urls[0].url;
+    
+    // Clear previous logs
+    currentExecution.logs = [];
+    currentExecution.isRunning = true;
+    currentExecution.startTime = new Date().toISOString();
+    currentExecution.mode = 'audience';
+    currentExecution.status = 'starting';
+
+    console.log(`🚀 Starting audience scraping with URL: ${firstUrl}`);
+
+    const scriptPath = path.join(__dirname, 'lead_generation', 'main.py');
+    const args = [scriptPath, 'test']; // Use test mode for audience scraping
+    
+    // Set up environment variables
+    const scriptEnv = { 
+      ...process.env, 
+      PYTHONUNBUFFERED: '1',
+      TEST_APOLLO_URL: firstUrl
+    };
+    
+    // Add current organization context if available
+    if (appState.currentOrganization) {
+      scriptEnv.CURRENT_ORGANIZATION_ID = appState.currentOrganization;
+      console.log(`🏢 Running audience scraping in organization context: ${appState.currentOrganization}`);
+    }
+    
+    // Add record count if provided
+    if (recordCount) {
+      scriptEnv.RECORD_COUNT = recordCount.toString();
+    }
+    
+    // Add audience context
+    scriptEnv.AUDIENCE_ID = id;
+    
+    const scriptProcess = spawn(pythonCmd, args, {
+      cwd: path.join(__dirname, 'lead_generation'),
+      env: scriptEnv
+    });
+
+    currentExecution.process = scriptProcess;
+    currentExecution.status = 'running';
+
+    // Handle script output
+    scriptProcess.stdout.on('data', (data) => {
+      const output = data.toString();
+      console.log('Audience scraping stdout:', output);
+      currentExecution.logs.push({
+        timestamp: new Date().toISOString(),
+        type: 'stdout',
+        message: output
+      });
+      
+      // Keep only last 1000 log entries
+      if (currentExecution.logs.length > 1000) {
+        currentExecution.logs = currentExecution.logs.slice(-1000);
+      }
+    });
+
+    scriptProcess.stderr.on('data', (data) => {
+      const output = data.toString();
+      console.log('Audience scraping stderr:', output);
+      currentExecution.logs.push({
+        timestamp: new Date().toISOString(),
+        type: 'stderr',
+        message: output
+      });
+    });
+
+    scriptProcess.on('close', (code) => {
+      const endTime = new Date().toISOString();
+      const duration = new Date(endTime).getTime() - new Date(currentExecution.startTime).getTime();
+      
+      console.log(`Audience scraping process exited with code ${code}`);
+      
+      // Save execution history
+      const historyEntry = {
+        id: Date.now(),
+        mode: 'audience',
+        audienceId: id,
+        startTime: currentExecution.startTime,
+        endTime: endTime,
+        duration: Math.round(duration / 1000),
+        exitCode: code,
+        success: code === 0,
+        logCount: currentExecution.logs.length
+      };
+      
+      executionHistory.unshift(historyEntry);
+      if (executionHistory.length > 50) {
+        executionHistory = executionHistory.slice(0, 50);
+      }
+      
+      // Reset current execution
+      currentExecution.isRunning = false;
+      currentExecution.process = null;
+      currentExecution.status = code === 0 ? 'completed' : 'failed';
+    });
+    
+    res.json({ 
+      message: `Audience scraping started for ${urls.length} URLs`,
+      audienceId: id,
+      urlCount: urls.length,
+      firstUrl: firstUrl,
+      status: 'running'
+    });
+    
   } catch (error) {
     console.error('Error starting audience scrape:', error);
     res.status(500).json({ error: error.message });
@@ -1334,7 +1680,7 @@ app.post('/campaigns', async (req, res) => {
 
 app.put('/campaigns/:id', async (req, res) => {
   const { id } = req.params;
-  const { name, description, status, tags, priority } = req.body;
+  const { name, description, status, tags, priority, audience_id } = req.body;
   const supabaseUrl = appState.supabase?.url;
   const supabaseKey = appState.supabase?.key;
   
@@ -1349,6 +1695,7 @@ app.put('/campaigns/:id', async (req, res) => {
     if (status !== undefined) updateData.status = status;
     if (tags !== undefined) updateData.tags = tags;
     if (priority !== undefined) updateData.priority = priority;
+    if (audience_id !== undefined) updateData.audience_id = audience_id;
 
     const cleanUrl = supabaseUrl.replace(/\/+$/, '');
     const response = await fetch(`${cleanUrl}/rest/v1/campaigns?id=eq.${id}`, {
@@ -1740,6 +2087,7 @@ app.listen(port, () => {
   console.log('- POST /test-supabase');
   console.log('- POST /generate-icebreaker');
   console.log('- GET  /sample-data');
+  console.log('- GET  /export-icebreakers');
   console.log('- GET  /organizations');
   console.log('- POST /organizations');
   console.log('- GET  /organizations/:id');
