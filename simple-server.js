@@ -521,7 +521,7 @@ app.get('/export-icebreakers', async (req, res) => {
       
       // Get processed leads with icebreakers for these search URLs
       const searchUrlFilter = searchUrlIds.map(id => `"${id}"`).join(',');
-      query = `${cleanUrl}/rest/v1/processed_leads?select=first_name,last_name,email,linkedin_url,headline,icebreaker,created_at&search_url_id=in.(${searchUrlFilter})&icebreaker=not.is.null&order=first_name.asc`;
+      query = `${cleanUrl}/rest/v1/processed_leads?select=first_name,last_name,email,linkedin_url,headline,icebreaker,subject_line,created_at&search_url_id=in.(${searchUrlFilter})&icebreaker=not.is.null&order=first_name.asc`;
     } else {
       // For all campaigns fallback (legacy audience-based)
       query = `${cleanUrl}/rest/v1/raw_contacts?select=name,email,linkedin_url,title,headline,mutiline_icebreaker,scraped_at,audience_id&mutiline_icebreaker=not.is.null${audienceFilter}&order=name.asc`;
@@ -550,16 +550,17 @@ app.get('/export-icebreakers', async (req, res) => {
     const csvData = contacts.map(contact => ({
       name: contact.first_name && contact.last_name ? `${contact.first_name} ${contact.last_name}` : contact.name || '',
       email: contact.email || '',
+      subject_line: contact.subject_line || '',
+      icebreaker: contact.icebreaker || contact.mutiline_icebreaker || '',
       linkedin_url: contact.linkedin_url || '',
       title: contact.title || '',
       headline: contact.headline || '',
-      icebreaker: contact.icebreaker || contact.mutiline_icebreaker || '',
       scraped_at: contact.created_at || contact.processed_at || contact.scraped_at || ''
     }));
 
     // Check if client wants CSV download directly
     if (req.query.format === 'csv') {
-      const csvHeaders = ['name', 'email', 'linkedin_url', 'title', 'headline', 'icebreaker', 'scraped_at'];
+      const csvHeaders = ['name', 'email', 'subject_line', 'icebreaker', 'linkedin_url', 'title', 'headline', 'scraped_at'];
       const csvContent = [
         csvHeaders.join(','),
         ...csvData.map(row => 
