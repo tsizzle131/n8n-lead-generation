@@ -435,7 +435,7 @@ app.get('/sample-data', (req, res) => {
 
 // Export icebreakers endpoint
 app.get('/export-icebreakers', async (req, res) => {
-  const { campaign_id, filename, download } = req.query;
+  const { campaign_id, campaign, filename, download } = req.query;
   const supabaseUrl = appState.supabase?.url;
   const supabaseKey = appState.supabase?.key;
   
@@ -448,10 +448,33 @@ app.get('/export-icebreakers', async (req, res) => {
     
     let audienceFilter = '';
     let campaignName = 'All Campaigns';
+    let actualCampaignId = campaign_id;
     
-    // If campaign_id is provided, get the audience_id from the campaign
-    if (campaign_id) {
-      const campaignResponse = await fetch(`${cleanUrl}/rest/v1/campaigns?id=eq.${campaign_id}&select=name,audience_id`, {
+    // Support both campaign_id and campaign name
+    if (campaign && !campaign_id) {
+      // If campaign name is provided, get its ID
+      const campaignResponse = await fetch(`${cleanUrl}/rest/v1/campaigns?name=eq.${encodeURIComponent(campaign)}&select=id,name`, {
+        method: 'GET',
+        headers: {
+          'apikey': supabaseKey,
+          'Authorization': `Bearer ${supabaseKey}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      
+      if (!campaignResponse.ok) {
+        throw new Error(`Failed to fetch campaign: ${campaignResponse.statusText}`);
+      }
+      
+      const campaigns = await campaignResponse.json();
+      if (!campaigns || campaigns.length === 0) {
+        return res.json({ error: `Campaign "${campaign}" not found`, count: 0, data: [] });
+      }
+      
+      actualCampaignId = campaigns[0].id;
+      campaignName = campaigns[0].name;
+    } else if (actualCampaignId) {
+      const campaignResponse = await fetch(`${cleanUrl}/rest/v1/campaigns?id=eq.${campaign_id}&select=name`, {
         method: 'GET',
         headers: {
           'apikey': supabaseKey,
@@ -471,15 +494,40 @@ app.get('/export-icebreakers', async (req, res) => {
       
       const campaign = campaigns[0];
       campaignName = campaign.name;
-      
-      if (!campaign.audience_id) {
-        return res.json({ error: `Campaign "${campaignName}" has no assigned audience`, count: 0, data: [] });
-      }
-      
-      audienceFilter = `&audience_id=eq.${campaign.audience_id}`;
     }
     
-    const response = await fetch(`${cleanUrl}/rest/v1/raw_contacts?select=name,email,linkedin_url,title,headline,mutiline_icebreaker,scraped_at,audience_id&mutiline_icebreaker=not.is.null${audienceFilter}&order=name.asc`, {
+    let query;
+    if (actualCampaignId) {
+      // First get the search_url IDs for this campaign
+      const searchUrlsResponse = await fetch(`${cleanUrl}/rest/v1/search_urls?campaign_id=eq.${actualCampaignId}&select=id`, {
+        method: 'GET',
+        headers: {
+          'apikey': supabaseKey,
+          'Authorization': `Bearer ${supabaseKey}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      
+      if (!searchUrlsResponse.ok) {
+        throw new Error(`Failed to fetch search URLs: ${searchUrlsResponse.statusText}`);
+      }
+      
+      const searchUrls = await searchUrlsResponse.json();
+      const searchUrlIds = searchUrls.map(su => su.id);
+      
+      if (searchUrlIds.length === 0) {
+        return res.json({ error: 'No URLs found for this campaign', count: 0, data: [] });
+      }
+      
+      // Get processed leads with icebreakers for these search URLs
+      const searchUrlFilter = searchUrlIds.map(id => `"${id}"`).join(',');
+      query = `${cleanUrl}/rest/v1/processed_leads?select=first_name,last_name,email,linkedin_url,headline,icebreaker,created_at&search_url_id=in.(${searchUrlFilter})&icebreaker=not.is.null&order=first_name.asc`;
+    } else {
+      // For all campaigns fallback (legacy audience-based)
+      query = `${cleanUrl}/rest/v1/raw_contacts?select=name,email,linkedin_url,title,headline,mutiline_icebreaker,scraped_at,audience_id&mutiline_icebreaker=not.is.null${audienceFilter}&order=name.asc`;
+    }
+    
+    const response = await fetch(query, {
       method: 'GET',
       headers: {
         'apikey': supabaseKey,
@@ -498,15 +546,15 @@ app.get('/export-icebreakers', async (req, res) => {
       return res.json({ error: 'No icebreakers found', count: 0, data: [] });
     }
 
-    // Format for CSV export
+    // Format for CSV export - from processed_leads
     const csvData = contacts.map(contact => ({
-      name: contact.name || '',
+      name: contact.first_name && contact.last_name ? `${contact.first_name} ${contact.last_name}` : contact.name || '',
       email: contact.email || '',
       linkedin_url: contact.linkedin_url || '',
       title: contact.title || '',
       headline: contact.headline || '',
-      icebreaker: contact.mutiline_icebreaker || '',
-      scraped_at: contact.scraped_at || ''
+      icebreaker: contact.icebreaker || contact.mutiline_icebreaker || '',
+      scraped_at: contact.created_at || contact.processed_at || contact.scraped_at || ''
     }));
 
     // Check if client wants CSV download directly
@@ -903,6 +951,250 @@ app.post('/organizations/:id/api-keys', async (req, res) => {
     res.json({ message: 'API keys updated successfully' });
   } catch (error) {
     console.error('Error updating organization API keys:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Product URL Analysis endpoint
+app.post('/analyze-product-url', async (req, res) => {
+  const { url } = req.body;
+  
+  if (!url) {
+    return res.status(400).json({ error: 'URL is required' });
+  }
+
+  try {
+    console.log(`🔍 Analyzing product URL: ${url}`);
+    
+    // Scrape the website content
+    const scrapeResponse = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; ProductAnalyzer/1.0)'
+      }
+    });
+    
+    if (!scrapeResponse.ok) {
+      throw new Error(`Failed to fetch URL: ${scrapeResponse.status}`);
+    }
+    
+    const html = await scrapeResponse.text();
+    
+    // Convert HTML to text (simple extraction - could be enhanced with cheerio)
+    const textContent = html
+      .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+      .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .substring(0, 5000); // Limit to first 5000 chars for AI analysis
+    
+    // Use OpenAI to analyze the content
+    const openaiKey = appState.apiKeys?.openai_api_key;
+    if (!openaiKey) {
+      return res.status(400).json({ error: 'OpenAI API key not configured' });
+    }
+    
+    const analysisPrompt = `Analyze this website content and extract product/service information.
+
+Website URL: ${url}
+Content: ${textContent}
+
+Extract the following information:
+1. Product/Service Name - The main product or company name
+2. Product Description - What they offer in 1-2 sentences
+3. Target Audience - Who would buy/use this (be specific)
+4. Value Proposition - The main benefit or problem they solve
+5. Industry Category - Choose from: beauty, technology, healthcare, retail, professional_services, food_beverage, education, finance, real_estate, manufacturing, other
+6. Key Features - 3-5 main features or benefits (as array)
+7. Suggested Messaging Tone - Based on the website's tone, suggest: professional, casual, technical, creative, or friendly
+
+Return ONLY valid JSON in this exact format:
+{
+  "product_name": "...",
+  "product_description": "...",
+  "target_audience": "...",
+  "value_proposition": "...",
+  "industry": "...",
+  "product_features": ["feature1", "feature2", "feature3"],
+  "messaging_tone": "..."
+}`;
+
+    const openaiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${openaiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: 'You are a product analysis expert. Extract key information about products and services from website content.'
+          },
+          {
+            role: 'user',
+            content: analysisPrompt
+          }
+        ],
+        temperature: 0.3,
+        max_tokens: 500
+      })
+    });
+    
+    if (!openaiResponse.ok) {
+      throw new Error('Failed to analyze with OpenAI');
+    }
+    
+    const aiResult = await openaiResponse.json();
+    const analysisText = aiResult.choices[0].message.content;
+    
+    // Parse the JSON response
+    let productData;
+    try {
+      productData = JSON.parse(analysisText);
+    } catch (parseError) {
+      console.error('Failed to parse AI response:', analysisText);
+      // Fallback to basic extraction
+      productData = {
+        product_name: 'Product Name',
+        product_description: 'Please review and update this description',
+        target_audience: 'Target audience',
+        value_proposition: 'Main value proposition',
+        industry: 'other',
+        product_features: ['Feature 1', 'Feature 2', 'Feature 3'],
+        messaging_tone: 'professional'
+      };
+    }
+    
+    // Add the URL and timestamp
+    productData.product_url = url;
+    productData.product_analyzed_at = new Date().toISOString();
+    
+    console.log('✅ Product analysis complete:', productData.product_name);
+    res.json({
+      success: true,
+      data: productData,
+      message: 'Product details extracted successfully. Please review and customize as needed.'
+    });
+    
+  } catch (error) {
+    console.error('Error analyzing product URL:', error);
+    res.status(500).json({ 
+      error: error.message || 'Failed to analyze product URL',
+      suggestion: 'Please check the URL is accessible and try again, or enter details manually.'
+    });
+  }
+});
+
+// Get product configuration for an organization
+app.get('/organizations/:id/product-config', async (req, res) => {
+  const { id } = req.params;
+  const supabaseUrl = appState.supabase?.url;
+  const supabaseKey = appState.supabase?.key;
+  
+  if (!supabaseUrl || !supabaseKey) {
+    return res.status(400).json({ error: 'Supabase not configured' });
+  }
+
+  try {
+    const cleanUrl = supabaseUrl.replace(/\/+$/, '');
+    const response = await fetch(
+      `${cleanUrl}/rest/v1/organizations?id=eq.${id}&select=product_url,product_name,product_description,value_proposition,target_audience,industry,product_features,product_examples,messaging_tone,product_analyzed_at,custom_icebreaker_prompt`,
+      {
+        method: 'GET',
+        headers: {
+          'apikey': supabaseKey,
+          'Authorization': `Bearer ${supabaseKey}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+    }
+
+    const organizations = await response.json();
+    if (organizations.length === 0) {
+      return res.status(404).json({ error: 'Organization not found' });
+    }
+
+    res.json(organizations[0]);
+  } catch (error) {
+    console.error('Error fetching product config:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Update product configuration for an organization
+app.put('/organizations/:id/product-config', async (req, res) => {
+  const { id } = req.params;
+  const productConfig = req.body;
+  const supabaseUrl = appState.supabase?.url;
+  const supabaseKey = appState.supabase?.key;
+  
+  if (!supabaseUrl || !supabaseKey) {
+    return res.status(400).json({ error: 'Supabase not configured' });
+  }
+
+  try {
+    // Build dynamic icebreaker prompt based on product config
+    let customPrompt = null;
+    if (productConfig.product_name && productConfig.value_proposition) {
+      customPrompt = `You're writing the opening lines of a cold email for ${productConfig.product_name}.
+
+**The Person:**
+Name: {first_name} {last_name}
+Role: {headline}
+Company: {company_name}
+Location: {location}
+
+**What you learned about their company:**
+{website_summaries}
+
+**Your Product/Service:**
+- Name: ${productConfig.product_name}
+- Description: ${productConfig.product_description || 'Product/service'}
+- Value: ${productConfig.value_proposition}
+- Target: ${productConfig.target_audience || 'Businesses'}
+
+**Your Job:**
+Write 2-3 sentences that:
+1. Reference ONE specific thing about their business
+2. Connect it to how ${productConfig.product_name} could help
+3. Sound human and conversational
+
+**Tone:** ${productConfig.messaging_tone || 'professional'}
+
+Return format:
+{{"icebreaker": "your message"}}`;
+      
+      productConfig.custom_icebreaker_prompt = customPrompt;
+    }
+    
+    const cleanUrl = supabaseUrl.replace(/\/+$/, '');
+    const response = await fetch(`${cleanUrl}/rest/v1/organizations?id=eq.${id}`, {
+      method: 'PATCH',
+      headers: {
+        'apikey': supabaseKey,
+        'Authorization': `Bearer ${supabaseKey}`,
+        'Content-Type': 'application/json',
+        'Prefer': 'return=representation'
+      },
+      body: JSON.stringify(productConfig)
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+    }
+
+    const updated = await response.json();
+    res.json({ 
+      message: 'Product configuration updated successfully',
+      organization: updated[0]
+    });
+  } catch (error) {
+    console.error('Error updating product config:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -1575,6 +1867,7 @@ app.post('/audiences/:id/scrape', async (req, res) => {
       currentExecution.isRunning = false;
       currentExecution.process = null;
       currentExecution.status = code === 0 ? 'completed' : 'failed';
+      currentExecution.campaignId = null;
     });
     
     res.json({ 
@@ -1878,6 +2171,7 @@ app.post('/run-script', (req, res) => {
   currentExecution.startTime = new Date().toISOString();
   currentExecution.mode = mode;
   currentExecution.status = 'starting';
+  currentExecution.campaignId = campaignId || null;
 
   console.log(`🚀 Starting script execution in ${mode} mode`);
   console.log(`📋 Script parameters:`, {
@@ -2003,6 +2297,7 @@ app.post('/run-script', (req, res) => {
       currentExecution.isRunning = false;
       currentExecution.process = null;
       currentExecution.status = code === 0 ? 'completed' : 'failed';
+      currentExecution.campaignId = null;
       
       // Keep logs available for a while after completion
       setTimeout(() => {
@@ -2022,6 +2317,7 @@ app.post('/run-script', (req, res) => {
   } catch (error) {
     currentExecution.isRunning = false;
     currentExecution.status = 'error';
+    currentExecution.campaignId = null;
     console.error('Script execution error:', error);
     res.status(500).json({ error: 'Failed to start script: ' + error.message });
   }
@@ -2031,6 +2327,7 @@ app.get('/script-status', (req, res) => {
   res.json({
     isRunning: currentExecution.isRunning,
     mode: currentExecution.mode,
+    campaignId: currentExecution.campaignId,
     startTime: currentExecution.startTime,
     status: currentExecution.status,
     logCount: currentExecution.logs.length,
