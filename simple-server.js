@@ -2094,6 +2094,47 @@ app.post('/campaigns/:id/urls', async (req, res) => {
 
   try {
     const cleanUrl = supabaseUrl.replace(/\/+$/, '');
+    
+    // First, check if URL already exists for this campaign
+    const checkResponse = await fetch(`${cleanUrl}/rest/v1/search_urls?url=eq.${encodeURIComponent(url.trim())}&campaign_id=eq.${id}`, {
+      method: 'GET',
+      headers: {
+        'apikey': supabaseKey,
+        'Authorization': `Bearer ${supabaseKey}`,
+        'Content-Type': 'application/json'
+      }
+    });
+    
+    if (checkResponse.ok) {
+      const existingUrls = await checkResponse.json();
+      
+      if (existingUrls && existingUrls.length > 0) {
+        // URL already exists for this campaign, update it to pending
+        const updateResponse = await fetch(`${cleanUrl}/rest/v1/search_urls?id=eq.${existingUrls[0].id}`, {
+          method: 'PATCH',
+          headers: {
+            'apikey': supabaseKey,
+            'Authorization': `Bearer ${supabaseKey}`,
+            'Content-Type': 'application/json',
+            'Prefer': 'return=representation'
+          },
+          body: JSON.stringify({
+            status: 'pending',
+            notes: notes || existingUrls[0].notes
+          })
+        });
+        
+        if (!updateResponse.ok) {
+          throw new Error(`Failed to update URL: HTTP ${updateResponse.status}`);
+        }
+        
+        const updatedUrl = await updateResponse.json();
+        console.log(`Updated existing URL to pending status for campaign ${id}`);
+        return res.json({ url: updatedUrl[0] });
+      }
+    }
+    
+    // URL doesn't exist for this campaign, create new one
     const response = await fetch(`${cleanUrl}/rest/v1/search_urls`, {
       method: 'POST',
       headers: {
@@ -2112,7 +2153,41 @@ app.post('/campaigns/:id/urls', async (req, res) => {
     });
 
     if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+      const errorText = await response.text();
+      
+      // If it's a duplicate key error, try to find and update the existing URL
+      if (errorText.includes('duplicate key')) {
+        console.log('URL exists in database, attempting to create a new entry with campaign link...');
+        
+        // Create a new URL entry with a unique identifier (append campaign ID to make it unique)
+        const uniqueUrl = `${url.trim()}#campaign=${id}`;
+        const retryResponse = await fetch(`${cleanUrl}/rest/v1/search_urls`, {
+          method: 'POST',
+          headers: {
+            'apikey': supabaseKey,
+            'Authorization': `Bearer ${supabaseKey}`,
+            'Content-Type': 'application/json',
+            'Prefer': 'return=representation'
+          },
+          body: JSON.stringify({
+            url: uniqueUrl,
+            notes: `${notes || 'URL for campaign'} (Campaign-specific)`,
+            campaign_id: id,
+            status: 'pending',
+            organization_id: appState.currentOrganization
+          })
+        });
+        
+        if (!retryResponse.ok) {
+          throw new Error(`HTTP ${retryResponse.status}: ${await retryResponse.text()}`);
+        }
+        
+        const searchUrl = await retryResponse.json();
+        console.log(`Created campaign-specific URL variant for campaign ${id}`);
+        return res.json({ url: searchUrl[0] });
+      }
+      
+      throw new Error(`HTTP ${response.status}: ${errorText}`);
     }
 
     const searchUrl = await response.json();
