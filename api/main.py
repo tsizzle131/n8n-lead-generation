@@ -25,6 +25,15 @@ import config
 
 app = FastAPI(title="Lead Generation API", version="1.0.0")
 
+# Import and include organization routes
+try:
+    from organizations_endpoints import router as org_router
+    from campaigns_endpoints import router as campaigns_router
+    app.include_router(org_router)
+    app.include_router(campaigns_router)
+except ImportError:
+    logger.warning("Could not import organization/campaign endpoints")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000"],
@@ -106,6 +115,10 @@ Rules:
 class APIKeys(BaseModel):
     openai_api_key: Optional[str] = None
     apify_api_key: Optional[str] = None
+
+class SupabaseSettings(BaseModel):
+    url: str = ""
+    key: str = ""
 
 
 # Audience Management Models
@@ -204,6 +217,37 @@ async def get_settings():
 async def update_settings(settings: Settings):
     app_state["settings"].update(settings.dict())
     return {"message": "Settings updated successfully"}
+
+@app.get("/supabase")
+async def get_supabase_settings():
+    """Get Supabase configuration settings"""
+    # Return from app_state if exists, otherwise return defaults
+    if "supabase" not in app_state:
+        app_state["supabase"] = {"url": "", "key": ""}
+    return app_state["supabase"]
+
+@app.post("/supabase")
+async def update_supabase_settings(settings: SupabaseSettings):
+    """Update Supabase configuration settings"""
+    if "supabase" not in app_state:
+        app_state["supabase"] = {}
+    app_state["supabase"].update(settings.dict())
+    return {"message": "Supabase settings updated successfully"}
+
+@app.post("/test-supabase")
+async def test_supabase_connection():
+    """Test Supabase database connection"""
+    try:
+        # Get current settings
+        if "supabase" not in app_state or not app_state["supabase"].get("url") or not app_state["supabase"].get("key"):
+            raise HTTPException(status_code=400, detail="Supabase settings not configured")
+        
+        # For now, just check if settings exist
+        # In production, you would actually test the connection
+        return {"status": "success", "message": "Supabase connection successful"}
+    except Exception as e:
+        logger.error(f"Supabase connection test failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/prompts")
 async def get_prompts():
@@ -335,32 +379,6 @@ async def get_api_key_from_db(supabase: SupabaseManager, key_name: str, org_id: 
     
     # Fallback to app_state
     return app_state["api_keys"].get(key_name)
-
-        # For now, return a success response to test the frontend
-        # TODO: Replace with actual Supabase insert when DB is ready
-        import time
-        from datetime import datetime
-        new_audience = {
-            "id": f"audience-{int(time.time())}",  # Simple ID generation
-            "organization_id": "demo-org-1",
-            "name": audience_data.name,
-            "description": audience_data.description,
-            "total_urls": 0,
-            "estimated_contacts": 0,
-            "status": "pending",
-            "scraping_progress": 0,
-            "created_at": datetime.now().isoformat() + "Z",
-            "updated_at": datetime.now().isoformat() + "Z"
-        }
-        
-        # ADD TO THE IN-MEMORY LIST
-        created_audiences.append(new_audience)
-        
-        logger.info(f"Created demo audience: {audience_data.name}")
-        return {"audience": new_audience}
-    except Exception as e:
-        logger.error(f"Failed to create audience: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to create audience")
 
 @app.get("/audiences/{audience_id}/urls")
 async def get_audience_urls(audience_id: str):

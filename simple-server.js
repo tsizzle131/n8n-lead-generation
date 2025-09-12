@@ -3,6 +3,7 @@ const cors = require('cors');
 const { spawn, execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { ApifyClient } = require('apify-client');
 
 // Script execution state
 let currentExecution = {
@@ -34,7 +35,7 @@ try {
 }
 
 const app = express();
-const port = 8000;
+const port = 5001;
 
 app.use(cors());
 app.use(express.json());
@@ -55,7 +56,7 @@ const STATE_FILE = path.join(__dirname, '.app-state.json');
 // Load state from file if it exists
 let appState = {
   // Multi-tenant state
-  currentOrganization: 'c0edb679-2d38-4500-9c4b-05ed1476563c', // Selected organization
+  currentOrganization: '9b86d8e2-3031-40e3-a3d7-2bde19e1a2dd', // Selected organization
   organizations: {}, // Cache of organization data
   apiKeys: {}, // Global admin API keys (fallback)
   settings: {
@@ -519,9 +520,9 @@ app.get('/export-icebreakers', async (req, res) => {
         return res.json({ error: 'No URLs found for this campaign', count: 0, data: [] });
       }
       
-      // Get processed leads with icebreakers for these search URLs
+      // Get processed leads with icebreakers for these search URLs, joined with raw_contacts for company info
       const searchUrlFilter = searchUrlIds.map(id => `"${id}"`).join(',');
-      query = `${cleanUrl}/rest/v1/processed_leads?select=first_name,last_name,email,linkedin_url,headline,icebreaker,subject_line,created_at&search_url_id=in.(${searchUrlFilter})&icebreaker=not.is.null&order=first_name.asc`;
+      query = `${cleanUrl}/rest/v1/processed_leads?select=first_name,last_name,email,linkedin_url,headline,icebreaker,subject_line,created_at,raw_contact_id,raw_contacts!inner(raw_data_json)&search_url_id=in.(${searchUrlFilter})&icebreaker=not.is.null&order=first_name.asc`;
     } else {
       // For all campaigns fallback (legacy audience-based)
       query = `${cleanUrl}/rest/v1/raw_contacts?select=name,email,linkedin_url,title,headline,mutiline_icebreaker,scraped_at,audience_id&mutiline_icebreaker=not.is.null${audienceFilter}&order=name.asc`;
@@ -547,20 +548,50 @@ app.get('/export-icebreakers', async (req, res) => {
     }
 
     // Format for CSV export - from processed_leads
-    const csvData = contacts.map(contact => ({
-      name: contact.first_name && contact.last_name ? `${contact.first_name} ${contact.last_name}` : contact.name || '',
-      email: contact.email || '',
-      subject_line: contact.subject_line || '',
-      icebreaker: contact.icebreaker || contact.mutiline_icebreaker || '',
-      linkedin_url: contact.linkedin_url || '',
-      title: contact.title || '',
-      headline: contact.headline || '',
-      scraped_at: contact.created_at || contact.processed_at || contact.scraped_at || ''
-    }));
+    const csvData = contacts.map(contact => {
+      // Extract company name from raw_data_json if available
+      let companyName = '';
+      if (contact.raw_contacts && contact.raw_contacts.raw_data_json) {
+        try {
+          const rawData = typeof contact.raw_contacts.raw_data_json === 'string' 
+            ? JSON.parse(contact.raw_contacts.raw_data_json) 
+            : contact.raw_contacts.raw_data_json;
+          
+          // Handle Apollo data structure (organization is an object with name field)
+          if (rawData.organization) {
+            if (typeof rawData.organization === 'object' && rawData.organization.name) {
+              companyName = rawData.organization.name;
+            } else if (typeof rawData.organization === 'string') {
+              companyName = rawData.organization;
+            }
+          }
+          
+          // Fall back to other possible fields
+          if (!companyName) {
+            companyName = rawData.company || rawData.company_name || 
+                         rawData.current_company || rawData.businessName || rawData.name || '';
+          }
+        } catch (e) {
+          console.error('Error parsing raw_data_json:', e);
+        }
+      }
+      
+      return {
+        name: contact.first_name && contact.last_name ? `${contact.first_name} ${contact.last_name}` : contact.name || '',
+        company: companyName,
+        email: contact.email || '',
+        subject_line: contact.subject_line || '',
+        icebreaker: contact.icebreaker || contact.mutiline_icebreaker || '',
+        linkedin_url: contact.linkedin_url || '',
+        title: contact.title || '',
+        headline: contact.headline || '',
+        scraped_at: contact.created_at || contact.processed_at || contact.scraped_at || ''
+      };
+    });
 
     // Check if client wants CSV download directly
     if (req.query.format === 'csv') {
-      const csvHeaders = ['name', 'email', 'subject_line', 'icebreaker', 'linkedin_url', 'title', 'headline', 'scraped_at'];
+      const csvHeaders = ['name', 'company', 'email', 'subject_line', 'icebreaker', 'linkedin_url', 'title', 'headline', 'scraped_at'];
       const csvContent = [
         csvHeaders.join(','),
         ...csvData.map(row => 
@@ -2462,6 +2493,629 @@ app.get('/execution-history', (req, res) => {
       uptime: Math.round((new Date() - new Date(currentExecution.startTime)) / 1000)
     } : null
   });
+});
+
+// ============================================
+// Google Maps Campaign Endpoints
+// ============================================
+
+// Mock data for Google Maps campaigns (replace with actual DB calls)
+let gmapsCampaigns = [];
+
+app.get('/api/gmaps/campaigns', (req, res) => {
+  console.log('📍 Fetching Google Maps campaigns');
+  res.json({ campaigns: gmapsCampaigns });
+});
+
+app.post('/api/gmaps/campaigns/create', (req, res) => {
+  const { name, location, keywords, coverage_profile = 'balanced', description } = req.body;
+  
+  console.log('📍 Creating Google Maps campaign:', { name, location, keywords });
+  
+  if (!name || !location || !keywords) {
+    return res.status(400).json({ 
+      error: 'Name, location, and keywords are required' 
+    });
+  }
+  
+  const newCampaign = {
+    id: Date.now().toString(),
+    name,
+    location,
+    keywords: typeof keywords === 'string' ? keywords.split(',').map(k => k.trim()) : keywords,
+    coverage_profile,
+    description,
+    status: 'draft',
+    target_zip_count: coverage_profile === 'budget' ? 5 : coverage_profile === 'balanced' ? 10 : 20,
+    estimated_cost: coverage_profile === 'budget' ? 25 : coverage_profile === 'balanced' ? 50 : 100,
+    total_businesses_found: 0,
+    total_emails_found: 0,
+    total_facebook_pages_found: 0,
+    actual_cost: 0,
+    created_at: new Date().toISOString(),
+    completed_at: null
+  };
+  
+  gmapsCampaigns.unshift(newCampaign);
+  
+  res.status(201).json({ 
+    campaign: newCampaign,
+    message: 'Campaign created successfully' 
+  });
+});
+
+app.post('/api/gmaps/campaigns/:campaignId/execute', async (req, res) => {
+  const { campaignId } = req.params;
+  const { max_businesses_per_zip = 50 } = req.body;
+  
+  console.log('📍 Executing Google Maps campaign:', campaignId);
+  
+  const campaign = gmapsCampaigns.find(c => c.id === campaignId);
+  if (!campaign) {
+    return res.status(404).json({ error: 'Campaign not found' });
+  }
+  
+  // Get Apify API key
+  const apifyKey = appState.apiKeys.apify_api_key;
+  if (!apifyKey) {
+    return res.status(400).json({ error: 'Apify API key not configured' });
+  }
+  
+  // Update campaign status
+  campaign.status = 'running';
+  campaign.businesses = [];
+  
+  res.json({
+    message: 'Campaign execution started',
+    campaign_id: campaignId,
+    status: 'running'
+  });
+  
+  // Run Apify scraper asynchronously
+  (async () => {
+    try {
+      console.log('🚀 Starting Google Maps with Contact Details scraper');
+      const client = new ApifyClient({ token: apifyKey });
+      
+      // Prepare search strings for Google Maps
+      const searchStrings = [];
+      campaign.keywords.forEach(keyword => {
+        searchStrings.push(`${keyword} ${campaign.location}`);
+      });
+      
+      console.log('📍 Google Maps search queries:', searchStrings);
+      
+      // Run Google Maps with Contact Details Scraper (lukaskrivka)
+      const googleMapsActor = 'WnMxbsRLNbPeYL6ge'; // Google Maps with Contact Details
+      const googleMapsInput = {
+        searchStringsArray: searchStrings, // This is the correct field name
+        maxCrawledPlacesPerSearch: max_businesses_per_zip || 20,
+        language: 'en',
+        exportPlaceUrls: false,
+        skipClosedPlaces: true,
+        // This scraper automatically gets contact details including emails
+        scrapeDirectEmails: true,
+        scrapeWebsiteEmails: true
+      };
+      
+      console.log('📍 Sending to Google Maps Scraper:', JSON.stringify(googleMapsInput, null, 2));
+      
+      const googleMapsRun = await client.actor(googleMapsActor).call(googleMapsInput);
+      
+      // Get Google Maps results
+      const { items } = await client.dataset(googleMapsRun.defaultDatasetId).listItems();
+      
+      console.log(`✅ Found ${items.length} businesses from Google Maps`);
+      
+      // Process Google Maps results - extract businesses with contact details
+      const facebookUrls = [];
+      const businessesMap = new Map(); // Use map to deduplicate by place ID
+      
+      items.forEach((place, index) => {
+        // Debug: log first place to see actual field names
+        if (index === 0) {
+          console.log('📍 Sample place data fields:', Object.keys(place));
+          if (place.facebooks) console.log('   - facebooks:', place.facebooks);
+          if (place.emails) {
+            console.log('   - emails:', place.emails);
+            console.log('   - emails type:', typeof place.emails);
+            console.log('   - emails length:', Array.isArray(place.emails) ? place.emails.length : 'not array');
+            if (Array.isArray(place.emails) && place.emails.length > 0) {
+              console.log('   - first email:', place.emails[0]);
+              console.log('   - first email type:', typeof place.emails[0]);
+              console.log('   - first email truthy?:', !!place.emails[0]);
+            }
+          }
+        }
+        
+        // Google Maps with Contact Details returns place objects
+        const placeId = place.placeId || place.place_id || '';
+        const name = place.title || place.name || '';
+        
+        if (placeId && !businessesMap.has(placeId)) {
+          // Extract Facebook URL if present - facebooks is an array
+          let facebookUrl = '';
+          if (place.facebooks && Array.isArray(place.facebooks) && place.facebooks.length > 0) {
+            facebookUrl = place.facebooks[0]; // Take the first Facebook URL
+            facebookUrls.push(facebookUrl);
+          } else if (place.facebookUrl || place.facebook) {
+            facebookUrl = place.facebookUrl || place.facebook;
+            if (facebookUrl) facebookUrls.push(facebookUrl);
+          }
+          
+          // Extract email - properly handle emails array and filter empty strings
+          let extractedEmail = '';
+          if (place.email && place.email.trim()) {
+            extractedEmail = place.email.trim();
+          } else if (Array.isArray(place.emails) && place.emails.length > 0) {
+            // Find first non-empty email in the array
+            const validEmail = place.emails.find(e => e && e.trim());
+            if (validEmail) {
+              extractedEmail = validEmail.trim();
+            }
+          } else if (place.directEmail && place.directEmail.trim()) {
+            extractedEmail = place.directEmail.trim();
+          }
+          
+          businessesMap.set(placeId, {
+            placeId,
+            name,
+            address: place.address || '',
+            phone: place.phone || place.phoneNumber || '',
+            website: place.website || place.url || '',
+            email: extractedEmail,
+            facebookUrl,
+            category: place.category || place.categoryName || '',
+            rating: place.rating || place.stars || 0,
+            reviews: place.reviewsCount || place.numberOfReviews || 0,
+            city: place.city || '',
+            postalCode: place.postalCode || place.zipCode || '',
+            lat: place.location?.lat || place.latitude || 0,
+            lng: place.location?.lng || place.longitude || 0,
+            description: place.description || '',
+            openingHours: place.openingHours || {},
+            imageUrl: place.imageUrl || '',
+            plusCode: place.plusCode || ''
+          });
+        }
+      });
+      
+      // Convert map to array - businesses already have all the data from Google Maps
+      campaign.businesses = Array.from(businessesMap.values());
+      
+      console.log(`📘 Found ${campaign.businesses.length} businesses from Google Maps`);
+      
+      // ============================================
+      // Phase 2: CASCADING EMAIL ENRICHMENT STRATEGY
+      // ============================================
+      
+      // Initialize statistics tracking
+      const enrichmentStats = {
+        totalBusinesses: campaign.businesses.length,
+        hasEmailFromGoogleMaps: 0,
+        enrichedFromFacebook: 0,
+        enrichedFromSearch: 0,
+        stillNoEmail: 0
+      };
+      
+      // Categorize businesses based on what data they have
+      const businessesWithEmail = [];
+      const businessesNoEmailWithFB = [];
+      const businessesNoEmailNoFB = [];
+      
+      campaign.businesses.forEach(business => {
+        if (business.email) {
+          // Already has email - skip all enrichment
+          businessesWithEmail.push(business);
+          enrichmentStats.hasEmailFromGoogleMaps++;
+          console.log(`  ✅ ${business.name} already has email: ${business.email}`);
+        } else if (business.facebookUrl) {
+          // No email but has Facebook - needs FB enrichment
+          businessesNoEmailWithFB.push(business);
+          console.log(`  📘 ${business.name} has Facebook but no email`);
+        } else {
+          // No email and no Facebook - needs search then enrichment
+          businessesNoEmailNoFB.push(business);
+          console.log(`  🔍 ${business.name} needs Facebook search`);
+        }
+      });
+      
+      console.log('\n📊 Business Categorization:');
+      console.log(`  - With email (skip enrichment): ${businessesWithEmail.length}`);
+      console.log(`  - No email, has Facebook: ${businessesNoEmailWithFB.length}`);
+      console.log(`  - No email, no Facebook: ${businessesNoEmailNoFB.length}`);
+      
+      // ============================================
+      // Phase 2A: ENRICH BUSINESSES WITH FACEBOOK BUT NO EMAIL
+      // ============================================
+      if (businessesNoEmailWithFB.length > 0) {
+        console.log(`\n🚀 Starting Facebook enrichment for ${businessesNoEmailWithFB.length} businesses`);
+        
+        try {
+          // Collect and deduplicate Facebook URLs from businesses that need enrichment
+          const uniqueFbUrls = new Set();
+          const fbUrlBusinessMap = new Map(); // Map URL to businesses
+          
+          businessesNoEmailWithFB.forEach(business => {
+            if (business.facebookUrl && business.facebookUrl.includes('facebook.com')) {
+              // Normalize Facebook URL (remove trailing slashes, query params)
+              let normalizedUrl = business.facebookUrl.split('?')[0].replace(/\/$/, '');
+              
+              // Skip invalid URLs
+              if (!normalizedUrl.startsWith('http')) {
+                normalizedUrl = 'https://' + normalizedUrl;
+              }
+              
+              uniqueFbUrls.add(normalizedUrl);
+              
+              // Map URL to businesses (multiple businesses might have same FB page)
+              if (!fbUrlBusinessMap.has(normalizedUrl)) {
+                fbUrlBusinessMap.set(normalizedUrl, []);
+              }
+              fbUrlBusinessMap.get(normalizedUrl).push(business);
+            }
+          });
+          
+          const fbUrlsToEnrich = Array.from(uniqueFbUrls);
+          console.log(`  📘 Deduped ${businessesNoEmailWithFB.length} businesses to ${fbUrlsToEnrich.length} unique Facebook pages`);
+          
+          if (fbUrlsToEnrich.length > 0) {
+            // Run Facebook Pages Scraper
+            const fbRun = await client.actor('4Hv5RhChiaDk6iwad').call({
+              startUrls: fbUrlsToEnrich.map(url => ({ url })),
+              maxPagesToScrap: 1,
+              scrapeAbout: true,
+              scrapeReviews: false,
+              scrapePosts: false,
+              scrapeServices: true,
+              scrapeAdditionalInfo: true,
+              scrapeDirectEmails: true,
+              scrapeWebsiteEmails: true
+            });
+            
+            // Get Facebook enrichment results
+            const { items: fbItems } = await client.dataset(fbRun.defaultDatasetId).listItems();
+            
+            console.log(`  ✅ Enriched ${fbItems.length} Facebook pages`);
+            
+            // Merge Facebook data back into businesses
+            fbItems.forEach(fbItem => {
+              // Normalize the URL from results to match our map
+              const normalizedResultUrl = (fbItem.url || fbItem.facebookUrl || fbItem.pageUrl || '').split('?')[0].replace(/\/$/, '');
+              
+              // Find all businesses that have this Facebook page
+              const businesses = fbUrlBusinessMap.get(normalizedResultUrl) || [];
+              
+              // Also try to match by page URL or facebook URL fields
+              if (businesses.length === 0 && fbItem.facebookUrl) {
+                const altNormalizedUrl = fbItem.facebookUrl.split('?')[0].replace(/\/$/, '');
+                businesses.push(...(fbUrlBusinessMap.get(altNormalizedUrl) || []));
+              }
+              
+              businesses.forEach(business => {
+                // Check multiple possible email fields
+                let foundEmail = '';
+                
+                // Check direct email field
+                if (fbItem.email && fbItem.email.trim()) {
+                  foundEmail = fbItem.email.trim();
+                }
+                // Check emails array
+                else if (fbItem.emails && Array.isArray(fbItem.emails) && fbItem.emails.length > 0) {
+                  foundEmail = fbItem.emails[0].trim();
+                }
+                // Check contact_email field
+                else if (fbItem.contact_email && fbItem.contact_email.trim()) {
+                  foundEmail = fbItem.contact_email.trim();
+                }
+                // Check businessEmail field
+                else if (fbItem.businessEmail && fbItem.businessEmail.trim()) {
+                  foundEmail = fbItem.businessEmail.trim();
+                }
+                // Check in info object if it exists
+                else if (fbItem.info && typeof fbItem.info === 'object') {
+                  if (fbItem.info.email) {
+                    foundEmail = fbItem.info.email.trim();
+                  }
+                }
+                
+                if (foundEmail) {
+                  business.email = foundEmail;
+                  enrichmentStats.enrichedFromFacebook++;
+                  console.log(`    ✉️ Found email for ${business.name}: ${foundEmail}`);
+                  
+                  // Add additional Facebook data
+                  business.facebookData = {
+                    likes: fbItem.likes || 0,
+                    email: foundEmail,
+                    phone: fbItem.phone || '',
+                    website: fbItem.website || fbItem.websites?.[0] || ''
+                  };
+                } else {
+                  console.log(`    ❌ No email found for ${business.name} on Facebook page`);
+                }
+              });
+            });
+          }
+        } catch (fbError) {
+          console.error('  ⚠️ Facebook enrichment failed:', fbError.message);
+        }
+      }
+      
+      // ============================================
+      // Phase 2B: SEARCH FOR FACEBOOK PAGES AND ENRICH
+      // ============================================
+      if (businessesNoEmailNoFB.length > 0) {
+        console.log(`\n🔍 Searching for Facebook pages for ${businessesNoEmailNoFB.length} businesses`);
+        
+        try {
+          // Use Google Search to find Facebook pages
+          const googleSearchActor = 'nFJndFXA5zjCTuudP'; // Google Search Results Scraper
+          const batchSize = 10;
+          const foundFacebookUrls = [];
+          
+          for (let i = 0; i < businessesNoEmailNoFB.length; i += batchSize) {
+            const batch = businessesNoEmailNoFB.slice(i, i + batchSize);
+            console.log(`  Searching batch ${Math.floor(i/batchSize) + 1}/${Math.ceil(businessesNoEmailNoFB.length/batchSize)}`);
+            
+            // Create search queries for this batch
+            const searchQueries = batch.map(business => 
+              `"${business.name}" site:facebook.com ${business.city || campaign.location}`
+            ).join('\n');
+            
+            // Run Google Search
+            const searchRun = await client.actor(googleSearchActor).call({
+              queries: searchQueries,
+              maxPagesPerQuery: 1,
+              resultsPerPage: 5,
+              languageCode: 'en',
+              mobileResults: false
+            });
+            
+            // Get search results
+            const { items: searchResults } = await client.dataset(searchRun.defaultDatasetId).listItems();
+            
+            // Process search results to extract Facebook URLs
+            searchResults.forEach((result) => {
+              const query = result.searchQuery?.term || '';
+              const organicResults = result.organicResults || [];
+              
+              // Find which business this query belongs to
+              const business = batch.find(b => 
+                query.includes(b.name)
+              );
+              
+              if (business) {
+                // Find Facebook URL in search results
+                for (const organic of organicResults) {
+                  const url = organic.url || '';
+                  if (url.includes('facebook.com') && !url.includes('/directory/')) {
+                    business.facebookUrl = url;
+                    foundFacebookUrls.push({ business, url });
+                    console.log(`    ✓ Found Facebook for ${business.name}: ${url}`);
+                    break;
+                  }
+                }
+              }
+            });
+            
+            // Small delay between batches
+            if (i + batchSize < businessesNoEmailNoFB.length) {
+              await new Promise(resolve => setTimeout(resolve, 1000));
+            }
+          }
+          
+          // Now enrich the newly found Facebook pages
+          if (foundFacebookUrls.length > 0) {
+            console.log(`  📘 Enriching ${foundFacebookUrls.length} newly found Facebook pages`);
+            
+            // Deduplicate Facebook URLs (some businesses may have found the same page)
+            const uniqueUrlsMap = new Map();
+            foundFacebookUrls.forEach(({ business, url }) => {
+              const normalizedUrl = url.toLowerCase().split('?')[0].replace(/\/$/, '');
+              if (!uniqueUrlsMap.has(normalizedUrl)) {
+                uniqueUrlsMap.set(normalizedUrl, []);
+              }
+              uniqueUrlsMap.get(normalizedUrl).push(business);
+            });
+            
+            const fbUrlsToEnrich = Array.from(uniqueUrlsMap.keys());
+            console.log(`  📘 Deduped to ${fbUrlsToEnrich.length} unique Facebook pages`);
+            
+            // Run Facebook Pages Scraper
+            const fbRun = await client.actor('4Hv5RhChiaDk6iwad').call({
+              startUrls: fbUrlsToEnrich.map(url => ({ url })),
+              maxPagesToScrap: 1,
+              scrapeAbout: true,
+              scrapeReviews: false,
+              scrapePosts: false,
+              scrapeServices: true,
+              scrapeAdditionalInfo: true,
+              scrapeDirectEmails: true,
+              scrapeWebsiteEmails: true
+            });
+            
+            // Get Facebook enrichment results
+            const { items: fbItems } = await client.dataset(fbRun.defaultDatasetId).listItems();
+            
+            console.log(`  📊 Received ${fbItems.length} results from Facebook scraper`);
+            
+            // uniqueUrlsMap already contains the business mapping from above
+            
+            // Merge Facebook data back into businesses
+            fbItems.forEach(fbItem => {
+              // Get the URL from the Facebook result - try multiple fields
+              const resultUrl = fbItem.url || fbItem.facebookUrl || fbItem.pageUrl || '';
+              const normalizedResultUrl = resultUrl.toLowerCase().split('?')[0].replace(/\/$/, '');
+              
+              // Find all businesses for this Facebook page (could be multiple)
+              const businesses = uniqueUrlsMap.get(normalizedResultUrl) || [];
+              
+              if (businesses.length > 0) {
+                // Check for email in the simple "email" field (most common)
+                let foundEmail = '';
+                
+                if (fbItem.email && fbItem.email.trim()) {
+                  foundEmail = fbItem.email.trim();
+                }
+                
+                // Apply email to all businesses that share this Facebook page
+                businesses.forEach(business => {
+                  if (foundEmail) {
+                    business.email = foundEmail;
+                    enrichmentStats.enrichedFromSearch++;
+                    console.log(`    ✉️ Found email for ${business.name}: ${foundEmail}`);
+                    
+                    // Add Facebook data
+                    business.facebookData = {
+                      likes: fbItem.likes || 0,
+                      email: foundEmail,
+                      phone: fbItem.phone || '',
+                      website: fbItem.website || fbItem.websites?.[0] || ''
+                    };
+                  } else {
+                    console.log(`    ❌ No email found for ${business.name} on Facebook page`);
+                  }
+                });
+              } else {
+                console.log(`    ⚠️ Could not match Facebook result URL: ${normalizedResultUrl}`);
+              }
+            });
+          }
+        } catch (searchError) {
+          console.error('  ⚠️ Facebook search failed:', searchError.message);
+        }
+      }
+      
+      // Calculate final statistics
+      enrichmentStats.stillNoEmail = campaign.businesses.filter(b => !b.email).length;
+      
+      console.log('\n📊 Email Enrichment Results:');
+      console.log(`  - Already had email: ${enrichmentStats.hasEmailFromGoogleMaps}`);
+      console.log(`  - Enriched from Facebook: ${enrichmentStats.enrichedFromFacebook}`);
+      console.log(`  - Enriched via search: ${enrichmentStats.enrichedFromSearch}`);
+      console.log(`  - Still no email: ${enrichmentStats.stillNoEmail}`);
+      console.log(`  - Total with email: ${campaign.businesses.filter(b => b.email).length}/${campaign.businesses.length}`);
+      
+      // Update campaign stats
+      campaign.total_businesses_found = items.length;
+      campaign.total_emails_found = campaign.businesses.filter(b => b.email).length;
+      campaign.total_facebook_pages_found = facebookUrls.length;
+      campaign.status = 'completed';
+      campaign.completed_at = new Date().toISOString();
+      campaign.actual_cost = ((items.length * 0.007) + (facebookUrls.length * 0.003)).toFixed(2); // Updated cost estimate
+      
+      console.log(`✅ Campaign completed: ${campaign.total_businesses_found} businesses, ${campaign.total_emails_found} emails`);
+      
+    } catch (error) {
+      console.error('❌ Apify scraper error:', error);
+      campaign.status = 'failed';
+      campaign.error = error.message;
+    }
+  })();
+});
+
+app.get('/api/gmaps/campaigns/:campaignId', (req, res) => {
+  const { campaignId } = req.params;
+  
+  const campaign = gmapsCampaigns.find(c => c.id === campaignId);
+  if (!campaign) {
+    return res.status(404).json({ error: 'Campaign not found' });
+  }
+  
+  res.json({
+    campaign,
+    analytics: {
+      total_businesses: campaign.total_businesses_found,
+      total_emails: campaign.total_emails_found,
+      email_rate: campaign.total_businesses_found ? (campaign.total_emails_found / campaign.total_businesses_found * 100).toFixed(1) + '%' : '0%'
+    },
+    businesses: campaign.businesses || []
+  });
+});
+
+app.get('/api/gmaps/campaigns/:campaignId/export', (req, res) => {
+  const { campaignId } = req.params;
+  
+  const campaign = gmapsCampaigns.find(c => c.id === campaignId);
+  if (!campaign) {
+    return res.status(404).json({ error: 'Campaign not found' });
+  }
+  
+  if (!campaign.businesses || campaign.businesses.length === 0) {
+    return res.status(400).json({ error: 'No businesses found in campaign' });
+  }
+  
+  // Create CSV header
+  const headers = [
+    'Business Name',
+    'Address', 
+    'Phone',
+    'Website',
+    'Email',
+    'Facebook URL',
+    'Email Source',
+    'Rating',
+    'Reviews',
+    'Category',
+    'ZIP Code'
+  ];
+  
+  // Create CSV rows
+  const rows = campaign.businesses.map(business => {
+    const emailSource = business.emailSource || 
+                       (business.email && business.facebookUrl ? 'Facebook' : 
+                        business.email ? 'Google Maps' : 'Not Found');
+    
+    return [
+      business.title || business.name || '',
+      business.address || '',
+      business.phone || '',
+      business.website || '',
+      business.email || '',
+      business.facebookUrl || '',
+      emailSource,
+      business.rating || '',
+      business.reviews || '',
+      business.categoryName || '',
+      business.zip || ''
+    ].map(field => {
+      // Escape fields that contain commas, quotes, or newlines
+      const str = String(field);
+      if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+        return `"${str.replace(/"/g, '""')}"`;
+      }
+      return str;
+    }).join(',');
+  });
+  
+  // Combine headers and rows
+  const csvContent = [headers.join(','), ...rows].join('\n');
+  
+  // Add UTF-8 BOM for better Excel compatibility
+  const bom = '\uFEFF';
+  const csvWithBom = bom + csvContent;
+  
+  // Generate filename
+  const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
+  const filename = `gmaps-export-${campaign.name.replace(/[^a-zA-Z0-9]/g, '_')}-${timestamp}.csv`;
+  
+  // Send CSV as download
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.send(csvWithBom);
+});
+
+app.delete('/api/gmaps/campaigns/:campaignId', (req, res) => {
+  const { campaignId } = req.params;
+  
+  const index = gmapsCampaigns.findIndex(c => c.id === campaignId);
+  if (index === -1) {
+    return res.status(404).json({ error: 'Campaign not found' });
+  }
+  
+  gmapsCampaigns.splice(index, 1);
+  res.json({ message: 'Campaign deleted successfully' });
 });
 
 app.listen(port, () => {
