@@ -4,6 +4,7 @@ const { spawn, execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { ApifyClient } = require('apify-client');
+const { gmapsCampaigns, gmapsCoverage, gmapsBusinesses, gmapsExport, initializeSchema } = require('./supabase-db');
 
 // Script execution state
 let currentExecution = {
@@ -2499,15 +2500,52 @@ app.get('/execution-history', (req, res) => {
 // Google Maps Campaign Endpoints
 // ============================================
 
-// Mock data for Google Maps campaigns (replace with actual DB calls)
-let gmapsCampaigns = [];
+// Google Maps campaigns with file persistence
+const GMAPS_CAMPAIGNS_FILE = path.join(__dirname, 'gmaps-campaigns.json');
+// Campaigns now managed by Supabase
+// let gmapsCampaigns = [];
 
-app.get('/api/gmaps/campaigns', (req, res) => {
-  console.log('📍 Fetching Google Maps campaigns');
-  res.json({ campaigns: gmapsCampaigns });
+// Load campaigns from file on startup
+function loadGMapsCampaigns() {
+  try {
+    if (fs.existsSync(GMAPS_CAMPAIGNS_FILE)) {
+      const data = fs.readFileSync(GMAPS_CAMPAIGNS_FILE, 'utf8');
+      gmapsCampaigns = JSON.parse(data);
+      console.log(`✅ Loaded ${gmapsCampaigns.length} Google Maps campaigns from file`);
+    } else {
+      console.log('📁 No saved Google Maps campaigns found, starting fresh');
+    }
+  } catch (error) {
+    console.error('❌ Error loading Google Maps campaigns:', error);
+    gmapsCampaigns = [];
+  }
+}
+
+// Save campaigns to file
+function saveGMapsCampaigns() {
+  try {
+    fs.writeFileSync(GMAPS_CAMPAIGNS_FILE, JSON.stringify(gmapsCampaigns, null, 2));
+    console.log(`💾 Saved ${gmapsCampaigns.length} Google Maps campaigns to file`);
+  } catch (error) {
+    console.error('❌ Error saving Google Maps campaigns:', error);
+  }
+}
+
+// Campaigns are now loaded from Supabase on demand
+// loadGMapsCampaigns();
+
+app.get('/api/gmaps/campaigns', async (req, res) => {
+  console.log('📍 Fetching Google Maps campaigns from Supabase');
+  try {
+    const campaigns = await gmapsCampaigns.getAll();
+    res.json({ campaigns });
+  } catch (error) {
+    console.error('Error fetching campaigns:', error);
+    res.status(500).json({ error: 'Failed to fetch campaigns' });
+  }
 });
 
-app.post('/api/gmaps/campaigns/create', (req, res) => {
+app.post('/api/gmaps/campaigns/create', async (req, res) => {
   const { name, location, keywords, coverage_profile = 'balanced', description } = req.body;
   
   console.log('📍 Creating Google Maps campaign:', { name, location, keywords });
@@ -2518,41 +2556,119 @@ app.post('/api/gmaps/campaigns/create', (req, res) => {
     });
   }
   
-  const newCampaign = {
-    id: Date.now().toString(),
+  // Parse keywords
+  const keywordsArray = typeof keywords === 'string' ? keywords.split(',').map(k => k.trim()) : keywords;
+  
+  // Analyze ZIP codes for the location (unless it's already a ZIP)
+  let zipAnalysis = null;
+  const isZipCode = /^\d{5}(-\d{4})?$/.test(location.trim());
+  
+  if (!isZipCode) {
+    try {
+      console.log('🤖 Analyzing location for ZIP codes during campaign creation...');
+      const { spawn } = require('child_process');
+      const path = require('path');
+      
+      const analyzeZipCodes = () => {
+        return new Promise((resolve, reject) => {
+          const pythonProcess = spawn('python3', [
+            path.join(__dirname, 'analyze_zip_codes.py')
+          ]);
+          
+          const input = JSON.stringify({
+            location: location,
+            keywords: keywordsArray,
+            coverage_profile: coverage_profile
+          });
+          
+          let output = '';
+          let error = '';
+          
+          pythonProcess.stdout.on('data', (data) => {
+            output += data.toString();
+          });
+          
+          pythonProcess.stderr.on('data', (data) => {
+            error += data.toString();
+          });
+          
+          pythonProcess.on('close', (code) => {
+            if (code !== 0) {
+              console.error('ZIP analysis error:', error);
+              resolve(null); // Don't fail campaign creation
+            } else {
+              try {
+                const result = JSON.parse(output);
+                resolve(result);
+              } catch (e) {
+                console.error('Failed to parse ZIP analysis:', e);
+                resolve(null);
+              }
+            }
+          });
+          
+          pythonProcess.stdin.write(input);
+          pythonProcess.stdin.end();
+        });
+      };
+      
+      zipAnalysis = await analyzeZipCodes();
+      
+      if (zipAnalysis && zipAnalysis.zip_codes) {
+        console.log(`✅ Pre-analyzed ${zipAnalysis.zip_codes.length} ZIP codes for campaign`);
+      }
+    } catch (error) {
+      console.error('Error analyzing ZIP codes:', error);
+      // Continue without ZIP analysis
+    }
+  }
+  
+  const campaignData = {
     name,
     location,
-    keywords: typeof keywords === 'string' ? keywords.split(',').map(k => k.trim()) : keywords,
+    keywords: keywordsArray,
     coverage_profile,
     description,
     status: 'draft',
-    target_zip_count: coverage_profile === 'budget' ? 5 : coverage_profile === 'balanced' ? 10 : 20,
-    estimated_cost: coverage_profile === 'budget' ? 25 : coverage_profile === 'balanced' ? 50 : 100,
+    target_zip_count: zipAnalysis?.zip_codes?.length || (coverage_profile === 'budget' ? 5 : coverage_profile === 'balanced' ? 10 : 20),
+    estimated_cost: zipAnalysis?.cost_estimates?.total_cost || (coverage_profile === 'budget' ? 25 : coverage_profile === 'balanced' ? 50 : 100),
     total_businesses_found: 0,
     total_emails_found: 0,
     total_facebook_pages_found: 0,
     actual_cost: 0,
-    created_at: new Date().toISOString(),
-    completed_at: null
+    // Store ZIP codes if available
+    zipCodes: zipAnalysis?.zip_codes || []
   };
   
-  gmapsCampaigns.unshift(newCampaign);
-  
-  res.status(201).json({ 
-    campaign: newCampaign,
-    message: 'Campaign created successfully' 
-  });
+  try {
+    const newCampaign = await gmapsCampaigns.create(campaignData);
+    
+    res.status(201).json({ 
+      campaign: newCampaign,
+      message: 'Campaign created successfully',
+      zipAnalysis: zipAnalysis
+    });
+  } catch (error) {
+    console.error('Error creating campaign:', error);
+    res.status(500).json({ error: 'Failed to create campaign' });
+  }
 });
 
 app.post('/api/gmaps/campaigns/:campaignId/execute', async (req, res) => {
   const { campaignId } = req.params;
-  const { max_businesses_per_zip = 50 } = req.body;
+  const { max_businesses_per_zip = 200 } = req.body;
   
   console.log('📍 Executing Google Maps campaign:', campaignId);
   
-  const campaign = gmapsCampaigns.find(c => c.id === campaignId);
-  if (!campaign) {
-    return res.status(404).json({ error: 'Campaign not found' });
+  let campaign;
+  try {
+    campaign = await gmapsCampaigns.getById(campaignId);
+    if (!campaign) {
+      return res.status(404).json({ error: 'Campaign not found' });
+    }
+  } catch (error) {
+    console.error('Error fetching campaign:', error);
+    return res.status(500).json({ error: 'Failed to fetch campaign' });
   }
   
   // Get Apify API key
@@ -2561,8 +2677,15 @@ app.post('/api/gmaps/campaigns/:campaignId/execute', async (req, res) => {
     return res.status(400).json({ error: 'Apify API key not configured' });
   }
   
-  // Update campaign status
-  campaign.status = 'running';
+  // Update campaign status in Supabase
+  try {
+    await gmapsCampaigns.update(campaignId, {
+      status: 'running',
+      started_at: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error updating campaign status:', error);
+  }
   campaign.businesses = [];
   
   res.json({
@@ -2573,23 +2696,146 @@ app.post('/api/gmaps/campaigns/:campaignId/execute', async (req, res) => {
   
   // Run Apify scraper asynchronously
   (async () => {
+    console.log(`🔄 Starting async execution for campaign ${campaignId}`);
     try {
       console.log('🚀 Starting Google Maps with Contact Details scraper');
       const client = new ApifyClient({ token: apifyKey });
       
-      // Prepare search strings for Google Maps
-      const searchStrings = [];
-      campaign.keywords.forEach(keyword => {
-        searchStrings.push(`${keyword} ${campaign.location}`);
-      });
+      // ============================================
+      // STEP 1: ANALYZE LOCATION TO GET ZIP CODES
+      // ============================================
+      let zipCodes = [];
       
-      console.log('📍 Google Maps search queries:', searchStrings);
+      // Check if location appears to be a ZIP code already
+      const isZipCode = /^\d{5}(-\d{4})?$/.test(campaign.location.trim());
+      
+      if (isZipCode) {
+        // Single ZIP code provided
+        zipCodes = [{
+          zip: campaign.location.trim(),
+          neighborhood: 'Direct ZIP',
+          density_score: 5,
+          relevance_score: 10,
+          estimated_businesses: 250
+        }];
+        console.log('📍 Using single ZIP code:', campaign.location);
+      } else {
+        // Analyze location to get optimal ZIP codes
+        console.log('🤖 Analyzing location to determine optimal ZIP codes...');
+        
+        try {
+          const { spawn } = require('child_process');
+          const path = require('path');
+          
+          const analyzeZipCodes = () => {
+            return new Promise((resolve, reject) => {
+              const pythonProcess = spawn('python3', [
+                path.join(__dirname, 'analyze_zip_codes.py')
+              ]);
+              
+              const input = JSON.stringify({
+                location: campaign.location,
+                keywords: campaign.keywords,
+                coverage_profile: campaign.coverage_profile || 'balanced'
+              });
+              
+              let output = '';
+              let error = '';
+              
+              pythonProcess.stdout.on('data', (data) => {
+                output += data.toString();
+              });
+              
+              pythonProcess.stderr.on('data', (data) => {
+                error += data.toString();
+              });
+              
+              pythonProcess.on('close', (code) => {
+                if (code !== 0) {
+                  reject(new Error(`ZIP analysis failed: ${error}`));
+                } else {
+                  try {
+                    const result = JSON.parse(output);
+                    resolve(result);
+                  } catch (e) {
+                    reject(new Error(`Failed to parse ZIP analysis: ${e.message}`));
+                  }
+                }
+              });
+              
+              // Send input to Python script
+              pythonProcess.stdin.write(input);
+              pythonProcess.stdin.end();
+            });
+          };
+          
+          const zipAnalysis = await analyzeZipCodes();
+          zipCodes = zipAnalysis.zip_codes || [];
+          
+          // Store ZIP analysis in campaign
+          campaign.zipAnalysis = zipAnalysis;
+          campaign.target_zip_count = zipCodes.length;
+          
+          console.log(`✅ Selected ${zipCodes.length} ZIP codes for ${campaign.location}`);
+          zipCodes.forEach(z => {
+            console.log(`   - ${z.zip} (${z.neighborhood}): ~${z.estimated_businesses} businesses`);
+          });
+          
+        } catch (error) {
+          console.error('❌ ZIP code analysis failed:', error.message);
+          console.log('⚠️ Falling back to city-wide search');
+          // Fall back to searching the location as-is
+          zipCodes = [{
+            zip: campaign.location,
+            neighborhood: 'Full Area',
+            density_score: 5,
+            relevance_score: 5,
+            estimated_businesses: 500
+          }];
+        }
+      }
+      
+      // Store ZIP codes in campaign
+      campaign.zipCodes = zipCodes;
+      
+      // ============================================
+      // STEP 2: PREPARE SEARCH STRINGS WITH ZIP CODES
+      // ============================================
+      const searchStrings = [];
+      
+      if (zipCodes.length > 0 && zipCodes[0].zip !== campaign.location) {
+        // Use ZIP code-based searches
+        campaign.keywords.forEach(keyword => {
+          zipCodes.forEach(zipData => {
+            const searchQuery = `${keyword} ${zipData.zip}`;
+            searchStrings.push({
+              query: searchQuery,
+              zip: zipData.zip,
+              neighborhood: zipData.neighborhood
+            });
+          });
+        });
+        console.log(`📍 Generated ${searchStrings.length} ZIP-based search queries`);
+      } else {
+        // Fall back to location-based search
+        campaign.keywords.forEach(keyword => {
+          const searchQuery = `${keyword} ${campaign.location}`;
+          searchStrings.push({
+            query: searchQuery,
+            zip: campaign.location,
+            neighborhood: 'Full Area'
+          });
+        });
+        console.log('📍 Using location-based search queries');
+      }
+      
+      console.log('📍 Google Maps search queries:', searchStrings.map(s => s.query));
       
       // Run Google Maps with Contact Details Scraper (lukaskrivka)
       const googleMapsActor = 'WnMxbsRLNbPeYL6ge'; // Google Maps with Contact Details
       const googleMapsInput = {
-        searchStringsArray: searchStrings, // This is the correct field name
-        maxCrawledPlacesPerSearch: max_businesses_per_zip || 20,
+        searchStringsArray: searchStrings.map(s => s.query), // Extract just the query strings
+        maxCrawledPlacesPerSearch: max_businesses_per_zip || 200,
         language: 'en',
         exportPlaceUrls: false,
         skipClosedPlaces: true,
@@ -2600,10 +2846,14 @@ app.post('/api/gmaps/campaigns/:campaignId/execute', async (req, res) => {
       
       console.log('📍 Sending to Google Maps Scraper:', JSON.stringify(googleMapsInput, null, 2));
       
+      console.log(`📡 Calling Apify actor ${googleMapsActor} for campaign ${campaignId}...`);
       const googleMapsRun = await client.actor(googleMapsActor).call(googleMapsInput);
+      console.log(`✅ Apify run started with ID: ${googleMapsRun.id}`);
       
       // Get Google Maps results
+      console.log(`📥 Fetching results from dataset ${googleMapsRun.defaultDatasetId}...`);
       const { items } = await client.dataset(googleMapsRun.defaultDatasetId).listItems();
+      console.log(`📊 Retrieved ${items.length} items from Apify`);
       
       console.log(`✅ Found ${items.length} businesses from Google Maps`);
       
@@ -2611,10 +2861,45 @@ app.post('/api/gmaps/campaigns/:campaignId/execute', async (req, res) => {
       const facebookUrls = [];
       const businessesMap = new Map(); // Use map to deduplicate by place ID
       
+      // Create a mapping function to determine which ZIP/search query found each business
+      const getSourceZipForBusiness = (place) => {
+        // Try to determine which search query found this business
+        // The searchString field in the result tells us which query found it
+        const searchString = place.searchString || '';
+        
+        // Find matching search query to get ZIP
+        const matchedSearch = searchStrings.find(s => s.query === searchString);
+        if (matchedSearch) {
+          return {
+            sourceZip: matchedSearch.zip,
+            sourceNeighborhood: matchedSearch.neighborhood,
+            sourceQuery: matchedSearch.query
+          };
+        }
+        
+        // Fallback: extract ZIP from address if present
+        const addressZip = place.postalCode || place.zipCode || '';
+        if (addressZip) {
+          return {
+            sourceZip: addressZip,
+            sourceNeighborhood: 'From Address',
+            sourceQuery: searchString
+          };
+        }
+        
+        // Default fallback
+        return {
+          sourceZip: campaign.location,
+          sourceNeighborhood: 'Unknown',
+          sourceQuery: searchString
+        };
+      };
+      
       items.forEach((place, index) => {
         // Debug: log first place to see actual field names
         if (index === 0) {
           console.log('📍 Sample place data fields:', Object.keys(place));
+          if (place.searchString) console.log('   - searchString:', place.searchString);
           if (place.facebooks) console.log('   - facebooks:', place.facebooks);
           if (place.emails) {
             console.log('   - emails:', place.emails);
@@ -2633,6 +2918,8 @@ app.post('/api/gmaps/campaigns/:campaignId/execute', async (req, res) => {
         const name = place.title || place.name || '';
         
         if (placeId && !businessesMap.has(placeId)) {
+          // Get source ZIP information
+          const zipInfo = getSourceZipForBusiness(place);
           // Extract Facebook URL if present - facebooks is an array
           let facebookUrl = '';
           if (place.facebooks && Array.isArray(place.facebooks) && place.facebooks.length > 0) {
@@ -2665,6 +2952,7 @@ app.post('/api/gmaps/campaigns/:campaignId/execute', async (req, res) => {
             website: place.website || place.url || '',
             email: extractedEmail,
             facebookUrl,
+            linkedInUrl: place.linkedIn || place.linkedInUrl || '',
             category: place.category || place.categoryName || '',
             rating: place.rating || place.stars || 0,
             reviews: place.reviewsCount || place.numberOfReviews || 0,
@@ -2675,7 +2963,11 @@ app.post('/api/gmaps/campaigns/:campaignId/execute', async (req, res) => {
             description: place.description || '',
             openingHours: place.openingHours || {},
             imageUrl: place.imageUrl || '',
-            plusCode: place.plusCode || ''
+            plusCode: place.plusCode || '',
+            // ZIP tracking fields
+            sourceZip: zipInfo.sourceZip,
+            sourceNeighborhood: zipInfo.sourceNeighborhood,
+            sourceQuery: zipInfo.sourceQuery
           });
         }
       });
@@ -2851,59 +3143,51 @@ app.post('/api/gmaps/campaigns/:campaignId/execute', async (req, res) => {
         try {
           // Use Google Search to find Facebook pages
           const googleSearchActor = 'nFJndFXA5zjCTuudP'; // Google Search Results Scraper
-          const batchSize = 10;
           const foundFacebookUrls = [];
           
-          for (let i = 0; i < businessesNoEmailNoFB.length; i += batchSize) {
-            const batch = businessesNoEmailNoFB.slice(i, i + batchSize);
-            console.log(`  Searching batch ${Math.floor(i/batchSize) + 1}/${Math.ceil(businessesNoEmailNoFB.length/batchSize)}`);
+          // Create all search queries at once
+          const searchQueries = businessesNoEmailNoFB.map(business => 
+            `"${business.name}" site:facebook.com ${business.city || campaign.location}`
+          ).join('\n');
+          
+          console.log(`  📡 Running Google Search for all ${businessesNoEmailNoFB.length} businesses in one batch...`);
+          
+          // Run Google Search with all queries at once
+          const searchRun = await client.actor(googleSearchActor).call({
+            queries: searchQueries,
+            maxPagesPerQuery: 1,
+            resultsPerPage: 5,
+            languageCode: 'en',
+            mobileResults: false
+          });
+          
+          // Get search results
+          const { items: searchResults } = await client.dataset(searchRun.defaultDatasetId).listItems();
+          console.log(`  ✅ Got ${searchResults.length} search results`);
+          
+          // Process search results to extract Facebook URLs
+          searchResults.forEach((result) => {
+            const query = result.searchQuery?.term || '';
+            const organicResults = result.organicResults || [];
             
-            // Create search queries for this batch
-            const searchQueries = batch.map(business => 
-              `"${business.name}" site:facebook.com ${business.city || campaign.location}`
-            ).join('\n');
+            // Find which business this query belongs to
+            const business = businessesNoEmailNoFB.find(b => 
+              query.includes(b.name)
+            );
             
-            // Run Google Search
-            const searchRun = await client.actor(googleSearchActor).call({
-              queries: searchQueries,
-              maxPagesPerQuery: 1,
-              resultsPerPage: 5,
-              languageCode: 'en',
-              mobileResults: false
-            });
-            
-            // Get search results
-            const { items: searchResults } = await client.dataset(searchRun.defaultDatasetId).listItems();
-            
-            // Process search results to extract Facebook URLs
-            searchResults.forEach((result) => {
-              const query = result.searchQuery?.term || '';
-              const organicResults = result.organicResults || [];
-              
-              // Find which business this query belongs to
-              const business = batch.find(b => 
-                query.includes(b.name)
-              );
-              
-              if (business) {
-                // Find Facebook URL in search results
-                for (const organic of organicResults) {
-                  const url = organic.url || '';
-                  if (url.includes('facebook.com') && !url.includes('/directory/')) {
-                    business.facebookUrl = url;
-                    foundFacebookUrls.push({ business, url });
-                    console.log(`    ✓ Found Facebook for ${business.name}: ${url}`);
-                    break;
-                  }
+            if (business) {
+              // Find Facebook URL in search results
+              for (const organic of organicResults) {
+                const url = organic.url || '';
+                if (url.includes('facebook.com') && !url.includes('/directory/')) {
+                  business.facebookUrl = url;
+                  foundFacebookUrls.push({ business, url });
+                  console.log(`    ✓ Found Facebook for ${business.name}: ${url}`);
+                  break;
                 }
               }
-            });
-            
-            // Small delay between batches
-            if (i + batchSize < businessesNoEmailNoFB.length) {
-              await new Promise(resolve => setTimeout(resolve, 1000));
             }
-          }
+          });
           
           // Now enrich the newly found Facebook pages
           if (foundFacebookUrls.length > 0) {
@@ -2997,54 +3281,99 @@ app.post('/api/gmaps/campaigns/:campaignId/execute', async (req, res) => {
       console.log(`  - Still no email: ${enrichmentStats.stillNoEmail}`);
       console.log(`  - Total with email: ${campaign.businesses.filter(b => b.email).length}/${campaign.businesses.length}`);
       
-      // Update campaign stats
-      campaign.total_businesses_found = items.length;
-      campaign.total_emails_found = campaign.businesses.filter(b => b.email).length;
-      campaign.total_facebook_pages_found = facebookUrls.length;
-      campaign.status = 'completed';
-      campaign.completed_at = new Date().toISOString();
-      campaign.actual_cost = ((items.length * 0.007) + (facebookUrls.length * 0.003)).toFixed(2); // Updated cost estimate
+      // Update campaign stats in Supabase
+      const totalEmailsFound = campaign.businesses.filter(b => b.email).length;
+      const actualCost = ((items.length * 0.007) + (facebookUrls.length * 0.003)).toFixed(2);
       
-      console.log(`✅ Campaign completed: ${campaign.total_businesses_found} businesses, ${campaign.total_emails_found} emails`);
+      try {
+        await gmapsCampaigns.update(campaignId, {
+          total_businesses_found: items.length,
+          total_emails_found: totalEmailsFound,
+          total_facebook_pages_found: facebookUrls.length,
+          status: 'completed',
+          completed_at: new Date().toISOString(),
+          actual_cost: actualCost
+        });
+        
+        // Save businesses to Supabase
+        if (campaign.businesses.length > 0) {
+          // Group businesses by ZIP code for saving
+          const businessesByZip = {};
+          campaign.businesses.forEach(business => {
+            const zip = business.sourceZip || business.postalCode || business.zip || 'unknown';
+            if (!businessesByZip[zip]) {
+              businessesByZip[zip] = [];
+            }
+            businessesByZip[zip].push(business);
+          });
+          
+          // Save each ZIP's businesses
+          for (const [zipCode, zipBusinesses] of Object.entries(businessesByZip)) {
+            if (zipBusinesses && zipBusinesses.length > 0) {
+              await gmapsBusinesses.saveBusinesses(campaignId, zipBusinesses, zipCode);
+            }
+          }
+        }
+        
+        console.log(`✅ Campaign completed and saved to Supabase: ${items.length} businesses, ${totalEmailsFound} emails`);
+      } catch (error) {
+        console.error('Error saving campaign results to Supabase:', error);
+      }
       
     } catch (error) {
-      console.error('❌ Apify scraper error:', error);
-      campaign.status = 'failed';
-      campaign.error = error.message;
+      console.error(`❌ Campaign ${campaignId} failed with error:`, error);
+      console.error('Error stack:', error.stack);
+      
+      try {
+        await gmapsCampaigns.update(campaignId, {
+          status: 'failed',
+          error: error.message,
+          completed_at: new Date().toISOString()
+        });
+      } catch (updateError) {
+        console.error('Error updating failed campaign status:', updateError);
+      }
     }
   })();
 });
 
-app.get('/api/gmaps/campaigns/:campaignId', (req, res) => {
+app.get('/api/gmaps/campaigns/:campaignId', async (req, res) => {
   const { campaignId } = req.params;
   
-  const campaign = gmapsCampaigns.find(c => c.id === campaignId);
-  if (!campaign) {
-    return res.status(404).json({ error: 'Campaign not found' });
+  try {
+    const campaign = await gmapsCampaigns.getById(campaignId);
+    if (!campaign) {
+      return res.status(404).json({ error: 'Campaign not found' });
+    }
+    
+    res.json({
+      campaign,
+      analytics: {
+        total_businesses: campaign.total_businesses_found,
+        total_emails: campaign.total_emails_found,
+        email_rate: campaign.total_businesses_found ? (campaign.total_emails_found / campaign.total_businesses_found * 100).toFixed(1) + '%' : '0%'
+      },
+      businesses: campaign.businesses || []
+    });
+  } catch (error) {
+    console.error('Error fetching campaign:', error);
+    res.status(500).json({ error: 'Failed to fetch campaign' });
   }
-  
-  res.json({
-    campaign,
-    analytics: {
-      total_businesses: campaign.total_businesses_found,
-      total_emails: campaign.total_emails_found,
-      email_rate: campaign.total_businesses_found ? (campaign.total_emails_found / campaign.total_businesses_found * 100).toFixed(1) + '%' : '0%'
-    },
-    businesses: campaign.businesses || []
-  });
 });
 
-app.get('/api/gmaps/campaigns/:campaignId/export', (req, res) => {
+app.get('/api/gmaps/campaigns/:campaignId/export', async (req, res) => {
   const { campaignId } = req.params;
   
-  const campaign = gmapsCampaigns.find(c => c.id === campaignId);
-  if (!campaign) {
-    return res.status(404).json({ error: 'Campaign not found' });
-  }
-  
-  if (!campaign.businesses || campaign.businesses.length === 0) {
-    return res.status(400).json({ error: 'No businesses found in campaign' });
-  }
+  try {
+    const campaign = await gmapsCampaigns.getById(campaignId);
+    if (!campaign) {
+      return res.status(404).json({ error: 'Campaign not found' });
+    }
+    
+    const exportData = await gmapsExport.getExportData(campaignId);
+    if (!exportData || exportData.length === 0) {
+      return res.status(400).json({ error: 'No businesses found in campaign' });
+    }
   
   // Create CSV header
   const headers = [
@@ -3053,16 +3382,20 @@ app.get('/api/gmaps/campaigns/:campaignId/export', (req, res) => {
     'Phone',
     'Website',
     'Email',
+    'LinkedIn URL',
     'Facebook URL',
     'Email Source',
     'Rating',
     'Reviews',
     'Category',
-    'ZIP Code'
+    'Address ZIP',
+    'Source ZIP',
+    'Neighborhood',
+    'Search Query'
   ];
   
   // Create CSV rows
-  const rows = campaign.businesses.map(business => {
+  const rows = exportData.map(business => {
     const emailSource = business.emailSource || 
                        (business.email && business.facebookUrl ? 'Facebook' : 
                         business.email ? 'Google Maps' : 'Not Found');
@@ -3073,12 +3406,16 @@ app.get('/api/gmaps/campaigns/:campaignId/export', (req, res) => {
       business.phone || '',
       business.website || '',
       business.email || '',
-      business.facebookUrl || '',
+      business.linkedInUrl || business.linkedin_url || '',
+      business.facebookUrl || business.facebook_url || '',
       emailSource,
       business.rating || '',
-      business.reviews || '',
-      business.categoryName || '',
-      business.zip || ''
+      business.reviews || business.reviews_count || '',
+      business.categoryName || business.category || '',
+      business.postalCode || business.postal_code || business.zip || '',
+      business.sourceZip || '',
+      business.sourceNeighborhood || '',
+      business.sourceQuery || ''
     ].map(field => {
       // Escape fields that contain commas, quotes, or newlines
       const str = String(field);
@@ -3100,27 +3437,43 @@ app.get('/api/gmaps/campaigns/:campaignId/export', (req, res) => {
   const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
   const filename = `gmaps-export-${campaign.name.replace(/[^a-zA-Z0-9]/g, '_')}-${timestamp}.csv`;
   
-  // Send CSV as download
-  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-  res.send(csvWithBom);
+    // Send CSV as download
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(csvWithBom);
+  } catch (error) {
+    console.error('Error exporting campaign:', error);
+    res.status(500).json({ error: 'Failed to export campaign data' });
+  }
 });
 
-app.delete('/api/gmaps/campaigns/:campaignId', (req, res) => {
+app.delete('/api/gmaps/campaigns/:campaignId', async (req, res) => {
   const { campaignId } = req.params;
   
-  const index = gmapsCampaigns.findIndex(c => c.id === campaignId);
-  if (index === -1) {
-    return res.status(404).json({ error: 'Campaign not found' });
+  try {
+    await gmapsCampaigns.delete(campaignId);
+    res.json({ message: 'Campaign deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting campaign:', error);
+    if (error.message.includes('not found')) {
+      res.status(404).json({ error: 'Campaign not found' });
+    } else {
+      res.status(500).json({ error: 'Failed to delete campaign' });
+    }
   }
-  
-  gmapsCampaigns.splice(index, 1);
-  res.json({ message: 'Campaign deleted successfully' });
 });
 
-app.listen(port, () => {
+app.listen(port, async () => {
   console.log(`Lead Generation API Server running at http://localhost:${port}`);
   console.log('Python executable:', pythonCmd);
+  
+  // Initialize Supabase schema
+  try {
+    await initializeSchema();
+    console.log('✅ Supabase connection initialized');
+  } catch (error) {
+    console.error('⚠️ Supabase initialization warning:', error.message);
+  }
   console.log('Available endpoints:');
   console.log('- GET  / (health check)');
   console.log('- GET  /api-keys');  
