@@ -59,15 +59,24 @@ The system uses Supabase PostgreSQL. Required tables:
 
 ## Running the Application
 
-The system consists of two parts that need to be running:
+The system consists of three parts that need to be running:
 
-### 1. Backend API Server
+### 1. Python API Backend (FastAPI)
+```bash
+cd api
+python main.py
+```
+Runs on `http://localhost:8000`
+Handles organization management, campaign operations, and AI processing.
+
+### 2. Node.js Backend API Server
 ```bash
 node simple-server.js
 ```
 Runs on `http://localhost:5001`
+Handles Google Maps scraping, Facebook enrichment, and campaign execution.
 
-### 2. React Frontend
+### 3. React Frontend
 ```bash
 cd frontend
 npm start
@@ -86,13 +95,21 @@ The React app automatically connects to the backend API at localhost:5001.
 
 ## Core Files
 
-### Main Server
-- `simple-server.js` - Express server handling all API endpoints and campaign execution
+### Python API Backend (FastAPI)
+- `api/main.py` - FastAPI server for organization and campaign management
+- `api/organizations_endpoints.py` - Organization management endpoints
+- `api/campaigns_endpoints.py` - Campaign creation and management
+- `api/coverage_endpoints.py` - ZIP code coverage analysis
+
+### Node.js Backend
+- `simple-server.js` - Express server handling Google Maps/Facebook scraping and campaign execution
 - `supabase-db.js` - Database operations for Supabase
 
 ### Python Modules
 - `lead_generation/modules/coverage_analyzer.py` - ZIP code analysis using OpenAI
 - `lead_generation/modules/apify_client.py` - Apify API integration
+- `lead_generation/modules/ai_processor.py` - AI processing for icebreakers and analysis
+- `lead_generation/modules/supabase_manager.py` - Supabase database management
 
 ### Frontend (React App)
 - `frontend/src/components/GoogleMapsCampaigns.tsx` - Main campaign management interface
