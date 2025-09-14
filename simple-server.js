@@ -3047,13 +3047,14 @@ app.post('/api/gmaps/campaigns/:campaignId/execute', async (req, res) => {
       // ============================================
       // Phase 2A: ENRICH BUSINESSES WITH FACEBOOK BUT NO EMAIL
       // ============================================
+      let fbUrlBusinessMap = new Map(); // Declare at outer scope for reuse
+      
       if (businessesNoEmailWithFB.length > 0) {
         console.log(`\n🚀 Starting Facebook enrichment for ${businessesNoEmailWithFB.length} businesses`);
         
         try {
           // Collect and deduplicate Facebook URLs from businesses that need enrichment
           const uniqueFbUrls = new Set();
-          const fbUrlBusinessMap = new Map(); // Map URL to businesses
           
           businessesNoEmailWithFB.forEach(business => {
             if (business.facebookUrl && business.facebookUrl.includes('facebook.com')) {
@@ -3385,6 +3386,11 @@ app.post('/api/gmaps/campaigns/:campaignId/execute', async (req, res) => {
     } catch (error) {
       console.error(`❌ Campaign ${campaignId} failed with error:`, error);
       console.error('Error stack:', error.stack);
+      console.error('Error details:', {
+        message: error.message,
+        name: error.name,
+        code: error.code
+      });
       
       try {
         await gmapsCampaigns.update(campaignId, {
@@ -3396,7 +3402,10 @@ app.post('/api/gmaps/campaigns/:campaignId/execute', async (req, res) => {
         console.error('Error updating failed campaign status:', updateError);
       }
     }
-  })();
+  })().catch(uncaughtError => {
+    console.error(`🔥 Uncaught error in campaign ${campaignId} async execution:`, uncaughtError);
+    console.error('Stack:', uncaughtError.stack);
+  });
 });
 
 app.get('/api/gmaps/campaigns/:campaignId', async (req, res) => {
