@@ -32,12 +32,19 @@ The system also requires these API keys (set through the web interface after sta
 
 ### Installation
 
-1. Install dependencies:
+1. Install backend dependencies:
 ```bash
 npm install
 ```
 
-2. Ensure Python environment has required packages:
+2. Install frontend dependencies:
+```bash
+cd frontend
+npm install
+cd ..
+```
+
+3. Ensure Python environment has required packages:
 ```bash
 pip install openai supabase requests
 ```
@@ -50,22 +57,32 @@ The system uses Supabase PostgreSQL. Required tables:
 - `gmaps_campaign_coverage` - Stores ZIP code coverage
 - `gmaps_facebook_enrichments` - Stores Facebook enrichment results
 
-## Running the Server
+## Running the Application
 
-Start the main server:
+The system consists of two parts that need to be running:
+
+### 1. Backend API Server
 ```bash
 node simple-server.js
 ```
+Runs on `http://localhost:5001`
 
-The server runs on `http://localhost:5001`
+### 2. React Frontend
+```bash
+cd frontend
+npm start
+```
+Runs on `http://localhost:3000`
 
 ### Web Interface
 
-Access the frontend at `http://localhost:5001/gmaps.html` to:
-- Create and manage campaigns
+Access the React frontend at `http://localhost:3000` to:
+- Create and manage campaigns (Google Maps Campaigns section)
 - Set API keys
 - Monitor campaign progress
 - Export results to CSV
+
+The React app automatically connects to the backend API at localhost:5001.
 
 ## Core Files
 
@@ -77,8 +94,9 @@ Access the frontend at `http://localhost:5001/gmaps.html` to:
 - `lead_generation/modules/coverage_analyzer.py` - ZIP code analysis using OpenAI
 - `lead_generation/modules/apify_client.py` - Apify API integration
 
-### Frontend
-- `gmaps.html` - Main web interface for campaign management
+### Frontend (React App)
+- `frontend/src/components/GoogleMapsCampaigns.tsx` - Main campaign management interface
+- `frontend/.env` - Contains API URL configuration (points to localhost:5001)
 
 ## API Endpoints
 
