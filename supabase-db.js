@@ -235,7 +235,7 @@ const businesses = {
         emails: enrichmentData.emails || [enrichmentData.email].filter(Boolean),
         phone_numbers: enrichmentData.phoneNumbers || [],
         enrichment_source: 'facebook_scraper',
-        confidence_score: enrichmentData.confidence || 0.8,
+        // confidence_score: enrichmentData.confidence || 0.8, // Commented out - column doesn't exist yet
         raw_data: enrichmentData.rawData || enrichmentData
       })
       .select()
