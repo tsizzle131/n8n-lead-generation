@@ -2595,7 +2595,13 @@ app.post('/api/gmaps/campaigns/create', async (req, res) => {
           pythonProcess.on('close', (code) => {
             if (code !== 0) {
               console.error('ZIP analysis error:', error);
-              resolve(null); // Don't fail campaign creation
+              // Try to parse error output for specific error types
+              try {
+                const errorResult = JSON.parse(output || '{}');
+                resolve(errorResult); // Return error info
+              } catch (e) {
+                resolve(null); // Fallback if can't parse
+              }
             } else {
               try {
                 const result = JSON.parse(output);
@@ -2614,12 +2620,33 @@ app.post('/api/gmaps/campaigns/create', async (req, res) => {
       
       zipAnalysis = await analyzeZipCodes();
       
-      if (zipAnalysis && zipAnalysis.zip_codes) {
-        console.log(`✅ Pre-analyzed ${zipAnalysis.zip_codes.length} ZIP codes for campaign`);
+      // Check for errors in ZIP analysis
+      if (zipAnalysis && zipAnalysis.error_type === 'openai_quota') {
+        console.error('❌ OpenAI quota exceeded during ZIP analysis');
+        return res.status(400).json({
+          error: 'OpenAI API quota exceeded',
+          message: 'Unable to analyze ZIP codes - OpenAI API quota has been exceeded. Please check your OpenAI account or add credits.',
+          details: 'ZIP code analysis requires OpenAI API access to intelligently determine optimal coverage areas.'
+        });
       }
+      
+      if (!zipAnalysis || !zipAnalysis.zip_codes || zipAnalysis.zip_codes.length === 0) {
+        console.error('❌ ZIP analysis failed or returned no ZIP codes');
+        return res.status(400).json({
+          error: 'ZIP code analysis failed',
+          message: 'Unable to determine ZIP codes for the specified location. Please try a more specific location or enter ZIP codes directly.',
+          details: zipAnalysis?.reasoning || 'Unknown error during ZIP analysis'
+        });
+      }
+      
+      console.log(`✅ Pre-analyzed ${zipAnalysis.zip_codes.length} ZIP codes for campaign`);
     } catch (error) {
       console.error('Error analyzing ZIP codes:', error);
-      // Continue without ZIP analysis
+      return res.status(500).json({
+        error: 'ZIP analysis error',
+        message: 'An unexpected error occurred while analyzing ZIP codes',
+        details: error.message
+      });
     }
   }
   
@@ -3113,6 +3140,7 @@ app.post('/api/gmaps/campaigns/:campaignId/execute', async (req, res) => {
                 
                 if (foundEmail) {
                   business.email = foundEmail;
+                  business.emailSource = 'facebook'; // Track that this came from Facebook
                   enrichmentStats.enrichedFromFacebook++;
                   console.log(`    ✉️ Found email for ${business.name}: ${foundEmail}`);
                   
@@ -3121,7 +3149,8 @@ app.post('/api/gmaps/campaigns/:campaignId/execute', async (req, res) => {
                     likes: fbItem.likes || 0,
                     email: foundEmail,
                     phone: fbItem.phone || '',
-                    website: fbItem.website || fbItem.websites?.[0] || ''
+                    website: fbItem.website || fbItem.websites?.[0] || '',
+                    rawData: fbItem // Store raw data for enrichment saving
                   };
                 } else {
                   console.log(`    ❌ No email found for ${business.name} on Facebook page`);
@@ -3247,6 +3276,7 @@ app.post('/api/gmaps/campaigns/:campaignId/execute', async (req, res) => {
                 businesses.forEach(business => {
                   if (foundEmail) {
                     business.email = foundEmail;
+                    business.emailSource = 'facebook'; // Track that this came from Facebook
                     enrichmentStats.enrichedFromSearch++;
                     console.log(`    ✉️ Found email for ${business.name}: ${foundEmail}`);
                     
@@ -3300,6 +3330,17 @@ app.post('/api/gmaps/campaigns/:campaignId/execute', async (req, res) => {
           // Group businesses by ZIP code for saving
           const businessesByZip = {};
           campaign.businesses.forEach(business => {
+            // Set email source if not already set
+            if (!business.emailSource) {
+              if (business.email && business.facebookData) {
+                business.emailSource = 'facebook';
+              } else if (business.email) {
+                business.emailSource = 'google_maps';
+              } else {
+                business.emailSource = 'not_found';
+              }
+            }
+            
             const zip = business.sourceZip || business.postalCode || business.zip || 'unknown';
             if (!businessesByZip[zip]) {
               businessesByZip[zip] = [];
@@ -3310,7 +3351,28 @@ app.post('/api/gmaps/campaigns/:campaignId/execute', async (req, res) => {
           // Save each ZIP's businesses
           for (const [zipCode, zipBusinesses] of Object.entries(businessesByZip)) {
             if (zipBusinesses && zipBusinesses.length > 0) {
-              await gmapsBusinesses.saveBusinesses(campaignId, zipBusinesses, zipCode);
+              const savedBusinesses = await gmapsBusinesses.saveBusinesses(campaignId, zipBusinesses, zipCode);
+              
+              // Save Facebook enrichment data for businesses that have it
+              for (let i = 0; i < zipBusinesses.length; i++) {
+                const business = zipBusinesses[i];
+                const savedBusiness = savedBusinesses[i];
+                
+                if (business.facebookData && business.email && savedBusiness) {
+                  try {
+                    await gmapsBusinesses.saveFacebookEnrichment(savedBusiness.id, campaignId, {
+                      facebookUrl: business.facebookUrl,
+                      email: business.email,
+                      emails: [business.email],
+                      phoneNumbers: business.facebookData.phone ? [business.facebookData.phone] : [],
+                      confidence: 0.8,
+                      rawData: business.facebookData.rawData || business.facebookData
+                    });
+                  } catch (enrichErr) {
+                    console.error(`Failed to save Facebook enrichment for ${business.name}:`, enrichErr.message);
+                  }
+                }
+              }
             }
           }
         }
@@ -3396,9 +3458,12 @@ app.get('/api/gmaps/campaigns/:campaignId/export', async (req, res) => {
   
   // Create CSV rows
   const rows = exportData.map(business => {
-    const emailSource = business.emailSource || 
-                       (business.email && business.facebookUrl ? 'Facebook' : 
-                        business.email ? 'Google Maps' : 'Not Found');
+    // Use the actual email source from database
+    const emailSource = business.emailSource === 'google_maps' ? 'Google Maps' :
+                       business.emailSource === 'facebook' ? 'Facebook' :
+                       business.emailSource === 'website' ? 'Website' :
+                       business.emailSource === 'manual' ? 'Manual' :
+                       'Not Found';
     
     return [
       business.title || business.name || '',
@@ -3406,11 +3471,11 @@ app.get('/api/gmaps/campaigns/:campaignId/export', async (req, res) => {
       business.phone || '',
       business.website || '',
       business.email || '',
-      business.linkedInUrl || business.linkedin_url || '',
-      business.facebookUrl || business.facebook_url || '',
+      business.linkedInUrl || business.linkedin || '',
+      business.facebookUrl || business.facebook || '',
       emailSource,
       business.rating || '',
-      business.reviews || business.reviews_count || '',
+      business.reviews || '',
       business.categoryName || business.category || '',
       business.postalCode || business.postal_code || business.zip || '',
       business.sourceZip || '',

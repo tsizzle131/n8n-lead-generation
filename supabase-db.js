@@ -157,6 +157,7 @@ const businesses = {
       phone: biz.phone,
       website: biz.website || biz.url,
       email: biz.email,
+      email_source: biz.emailSource || (biz.email ? 'google_maps' : 'not_found'),
       category: biz.categoryName || biz.category,
       categories: biz.categories,
       description: biz.description,
@@ -203,6 +204,7 @@ const businesses = {
   async updateEnrichment(businessId, enrichmentData) {
     const updates = {
       email: enrichmentData.email,
+      email_source: enrichmentData.email ? 'facebook' : 'not_found',
       facebook_url: enrichmentData.facebookUrl,
       enrichment_status: enrichmentData.email ? 'enriched' : 'no_facebook',
       enrichment_attempts: supabase.sql`enrichment_attempts + 1`,
@@ -218,6 +220,28 @@ const businesses = {
       .single();
     
     if (error) handleError(error, 'Failed to update business enrichment');
+    return data;
+  },
+
+  // Save Facebook enrichment data
+  async saveFacebookEnrichment(businessId, campaignId, enrichmentData) {
+    const { data, error } = await supabase
+      .from('gmaps_facebook_enrichments')
+      .insert({
+        business_id: businessId,
+        campaign_id: campaignId,
+        facebook_url: enrichmentData.facebookUrl,
+        primary_email: enrichmentData.email,
+        emails: enrichmentData.emails || [enrichmentData.email].filter(Boolean),
+        phone_numbers: enrichmentData.phoneNumbers || [],
+        enrichment_source: 'facebook_scraper',
+        confidence_score: enrichmentData.confidence || 0.8,
+        raw_data: enrichmentData.rawData || enrichmentData
+      })
+      .select()
+      .single();
+    
+    if (error) handleError(error, 'Failed to save Facebook enrichment');
     return data;
   }
 };
@@ -279,21 +303,38 @@ const exportData = {
     
     if (error) handleError(error, 'Failed to fetch export data');
     
-    // Format for CSV export
-    return businesses.map(biz => ({
-      name: biz.name,
-      address: biz.address,
-      city: biz.city,
-      state: biz.state,
-      zip: biz.postal_code,
-      phone: biz.phone,
-      website: biz.website,
-      email: biz.email || biz.facebook_enrichments?.[0]?.primary_email || '',
-      facebook: biz.facebook_url || biz.facebook_enrichments?.[0]?.facebook_url || '',
-      category: biz.category,
-      rating: biz.rating,
-      reviews: biz.reviews_count
-    }));
+    // Format for CSV export with proper email source
+    return businesses.map(biz => {
+      // Determine the actual email and source
+      let email = biz.email;
+      let emailSource = biz.email_source || 'not_found';
+      
+      // If we have Facebook enrichment data, use that
+      if (biz.gmaps_facebook_enrichments && biz.gmaps_facebook_enrichments.length > 0) {
+        const fbEnrichment = biz.gmaps_facebook_enrichments[0];
+        if (fbEnrichment.primary_email) {
+          email = fbEnrichment.primary_email;
+          emailSource = 'facebook';
+        }
+      }
+      
+      return {
+        name: biz.name,
+        address: biz.address,
+        city: biz.city,
+        state: biz.state,
+        zip: biz.postal_code,
+        phone: biz.phone,
+        website: biz.website,
+        email: email || '',
+        emailSource: emailSource,
+        facebook: biz.facebook_url || biz.gmaps_facebook_enrichments?.[0]?.facebook_url || '',
+        linkedin: biz.linkedin_url || '',
+        category: biz.category,
+        rating: biz.rating,
+        reviews: biz.reviews_count
+      };
+    });
   }
 };
 

@@ -29,10 +29,12 @@ app = FastAPI(title="Lead Generation API", version="1.0.0")
 try:
     from organizations_endpoints import router as org_router
     from campaigns_endpoints import router as campaigns_router
+    from coverage_endpoints import router as coverage_router
     app.include_router(org_router)
     app.include_router(campaigns_router)
-except ImportError:
-    logger.warning("Could not import organization/campaign endpoints")
+    app.include_router(coverage_router)
+except ImportError as e:
+    logger.warning(f"Could not import endpoints: {e}")
 
 app.add_middleware(
     CORSMiddleware,
