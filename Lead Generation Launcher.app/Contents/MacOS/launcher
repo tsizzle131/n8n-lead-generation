@@ -1,0 +1,26 @@
+#!/bin/bash
+
+# The project directory is fixed
+PROJECT_DIR="/Users/tristanwaite/n8n test"
+
+# Use AppleScript to open Terminal and run the start script
+osascript <<EOF
+tell application "Terminal"
+    activate
+    -- Create a new window
+    do script "cd '$PROJECT_DIR' && echo '🚀 Starting Lead Generation System...' && ./start-dev.sh"
+
+    -- Set window properties
+    tell front window
+        set size to {1200, 700}
+        set position to {240, 100}
+    end tell
+end tell
+
+-- Also open the browser after a delay
+delay 5
+tell application "Safari"
+    activate
+    open location "http://localhost:3000"
+end tell
+EOF

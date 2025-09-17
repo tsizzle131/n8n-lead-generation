@@ -59,9 +59,39 @@ The system uses Supabase PostgreSQL. Required tables:
 
 ## Running the Application
 
+### Quick Start - Using the Launcher
+
+#### macOS Desktop Launcher
+For macOS users, desktop launchers are available for easy startup:
+
+1. **Desktop App**: Double-click `Lead Generation Launcher.app` on your Desktop
+   - Automatically starts all servers
+   - Opens Terminal with colored output
+   - Launches Safari to http://localhost:3000
+
+2. **Command File**: Double-click `Launch Lead Generation.command` on your Desktop
+   - Alternative launcher option
+   - Opens Terminal and starts servers
+
+#### Command Line Launcher
+```bash
+./start-dev.sh              # Start frontend and Express backend
+./start-dev.sh --with-fastapi  # Include FastAPI server on port 8000
+./start-dev.sh -f            # Short form for --with-fastapi
+```
+
+The launcher script:
+- Checks if ports are already in use
+- Prompts to kill existing processes if needed
+- Starts all required servers
+- Monitors processes and auto-restarts if they crash
+- Clean shutdown with Ctrl+C
+
+### Manual Start - Individual Components
+
 The system consists of three parts that need to be running:
 
-### 1. Python API Backend (FastAPI)
+#### 1. Python API Backend (FastAPI) - Optional
 ```bash
 cd api
 python main.py
@@ -69,14 +99,14 @@ python main.py
 Runs on `http://localhost:8000`
 Handles organization management, campaign operations, and AI processing.
 
-### 2. Node.js Backend API Server
+#### 2. Node.js Backend API Server - Required
 ```bash
 node simple-server.js
 ```
 Runs on `http://localhost:5001`
 Handles Google Maps scraping, Facebook enrichment, and campaign execution.
 
-### 3. React Frontend
+#### 3. React Frontend - Required
 ```bash
 cd frontend
 npm start
