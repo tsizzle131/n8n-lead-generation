@@ -27,3 +27,8 @@ __pycache__/
 # OS files
 .DS_Store
 Thumbs.db
+# Playwright browser automation
+.playwright-mcp/
+
+# CSV exports
+*.csv

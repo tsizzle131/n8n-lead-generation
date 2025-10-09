@@ -3441,10 +3441,13 @@ app.get('/api/gmaps/campaigns/:campaignId/export', async (req, res) => {
       return res.status(404).json({ error: 'Campaign not found' });
     }
     
-    const exportData = await gmapsExport.getExportData(campaignId);
+    // Use the new paginated export function to get ALL data
+    const exportData = await gmapsExport.getFullExportData(campaignId);
     if (!exportData || exportData.length === 0) {
       return res.status(400).json({ error: 'No businesses found in campaign' });
     }
+
+    console.log(`Exporting ${exportData.length} businesses for campaign ${campaign.name}`);
   
   // Create CSV header
   const headers = [

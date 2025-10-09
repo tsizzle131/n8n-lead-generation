@@ -284,31 +284,91 @@ const campaignCoverage = {
 
 // Export functions for CSV generation
 const exportData = {
-  // Get all data for export
-  async getExportData(campaignId) {
-    // Get businesses with enrichments
-    const { data: businesses, error } = await supabase
-      .from('gmaps_businesses')
-      .select(`
-        *,
-        gmaps_facebook_enrichments (
-          primary_email,
-          emails,
-          facebook_url,
-          phone_numbers
-        )
-      `)
-      .eq('campaign_id', campaignId)
-      .order('name');
-    
-    if (error) handleError(error, 'Failed to fetch export data');
-    
+  // Get all data for export with pagination support
+  async getExportData(campaignId, options = {}) {
+    const pageSize = options.pageSize || 1000;
+    const page = options.page || 0;
+    const getAllPages = options.getAllPages !== false; // Default to true
+
+    if (getAllPages) {
+      // Fetch ALL records using pagination
+      let allBusinesses = [];
+      let currentPage = 0;
+      let hasMore = true;
+
+      while (hasMore) {
+        const start = currentPage * pageSize;
+        const end = start + pageSize - 1;
+
+        const { data: businesses, error, count } = await supabase
+          .from('gmaps_businesses')
+          .select(`
+            *,
+            gmaps_facebook_enrichments (
+              primary_email,
+              emails,
+              facebook_url,
+              phone_numbers
+            )
+          `, { count: 'exact' })
+          .eq('campaign_id', campaignId)
+          .order('name')
+          .range(start, end);
+
+        if (error) handleError(error, `Failed to fetch export data (page ${currentPage})`);
+
+        if (businesses && businesses.length > 0) {
+          allBusinesses = allBusinesses.concat(businesses);
+          currentPage++;
+          hasMore = businesses.length === pageSize;
+        } else {
+          hasMore = false;
+        }
+
+        // Safety check to prevent infinite loops
+        if (currentPage > 100) { // Max 100,000 records
+          console.warn('Export pagination limit reached (100 pages)');
+          hasMore = false;
+        }
+      }
+
+      console.log(`Export: Fetched ${allBusinesses.length} total businesses across ${currentPage} pages`);
+      return allBusinesses;
+    } else {
+      // Single page fetch for specific page
+      const start = page * pageSize;
+      const end = start + pageSize - 1;
+
+      const { data: businesses, error } = await supabase
+        .from('gmaps_businesses')
+        .select(`
+          *,
+          gmaps_facebook_enrichments (
+            primary_email,
+            emails,
+            facebook_url,
+            phone_numbers
+          )
+        `)
+        .eq('campaign_id', campaignId)
+        .order('name')
+        .range(start, end);
+
+      if (error) handleError(error, `Failed to fetch export data (page ${page})`);
+      return businesses;
+    }
+  },
+
+  // Format businesses for CSV export
+  formatForExport(businesses) {
+    if (!businesses) return [];
+
     // Format for CSV export with proper email source
     return businesses.map(biz => {
       // Determine the actual email and source
       let email = biz.email;
       let emailSource = biz.email_source || 'not_found';
-      
+
       // If we have Facebook enrichment data, use that
       if (biz.gmaps_facebook_enrichments && biz.gmaps_facebook_enrichments.length > 0) {
         const fbEnrichment = biz.gmaps_facebook_enrichments[0];
@@ -317,7 +377,7 @@ const exportData = {
           emailSource = 'facebook';
         }
       }
-      
+
       return {
         name: biz.name,
         address: biz.address,
@@ -335,6 +395,12 @@ const exportData = {
         reviews: biz.reviews_count
       };
     });
+  },
+
+  // Get full export data (wrapper for backward compatibility)
+  async getFullExportData(campaignId) {
+    const businesses = await this.getExportData(campaignId, { getAllPages: true });
+    return this.formatForExport(businesses);
   }
 };
 
