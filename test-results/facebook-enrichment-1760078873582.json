@@ -1,0 +1,42 @@
+{
+  "campaignId": "e67dec8c-4540-4e19-9409-d9d0d8e1fd98",
+  "timestamp": "2025-10-10T06:47:52.126Z",
+  "phase2A": {
+    "phase": "2A",
+    "status": "success",
+    "businessesWithFacebookUrl": 86,
+    "enrichmentRecords": 3,
+    "enrichmentsWithEmail": 0,
+    "enrichmentsWithoutEmail": 3,
+    "successRate": 0
+  },
+  "phase2B": {
+    "phase": "2B",
+    "status": "success",
+    "businessesWithoutFacebook": 129,
+    "businessesNeedingDiscovery": 129,
+    "recentlyUpdated": 129
+  },
+  "phase2C": {
+    "phase": "2C",
+    "status": "success",
+    "businessesWithFacebook": 86,
+    "alreadyEnriched": 3,
+    "needingSecondPass": 83
+  },
+  "dataFlow": {
+    "totalBusinesses": 215,
+    "withEmail": 55,
+    "withFacebook": 86,
+    "emailSources": {
+      "unknown": 55
+    },
+    "fbEnrichments": 3,
+    "liEnrichments": 0,
+    "dataConsistencyIssues": 2
+  },
+  "errorHandling": {
+    "status": "success",
+    "testsRun": 3
+  }
+}

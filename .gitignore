@@ -1,0 +1,57 @@
+# API Keys - keep secure
+api/api_keys.json
+.app-state.json
+
+# Node modules
+node_modules/
+frontend/node_modules/
+
+# Environment files
+.env
+.env.local
+.env.production
+
+# Logs
+*.log
+lead_generation/*.log
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE files
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+# Playwright browser automation
+.playwright-mcp/
+
+# CSV exports
+*.csv
+
+# Test results and temporary files
+*_test_results.json
+*_results.json
+test_results/
+test-results/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+lead_generation/campaigns.db
+
+# Temporary and debug scripts
+temp_*.py
+temp_*.js
+check_*.py
+check_*.js
+debug_*.py
+debug_*.js
+
+# Archive directory (cleanup backups)
+archive/

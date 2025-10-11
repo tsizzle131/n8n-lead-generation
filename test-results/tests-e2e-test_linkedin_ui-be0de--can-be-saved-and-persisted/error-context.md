@@ -1,0 +1,78 @@
+# Page snapshot
+
+```yaml
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - generic [ref=e5]:
+      - heading "Lead Generation AI Assistant" [level=1] [ref=e6]
+      - button "TechStart Solutions trial 0 days left" [ref=e9] [cursor=pointer]:
+        - generic [ref=e10]:
+          - generic [ref=e11]:
+            - generic [ref=e12]: TechStart Solutions
+            - generic [ref=e13]:
+              - generic [ref=e14]: trial
+              - generic [ref=e15]: 0 days left
+          - img [ref=e16]
+    - navigation [ref=e18]:
+      - button "📧Apollo Campaigns" [ref=e19] [cursor=pointer]
+      - button "📍Local Business" [ref=e20] [cursor=pointer]
+      - button "🏢Organizations" [ref=e21] [cursor=pointer]
+      - button "⚙️Settings" [ref=e22] [cursor=pointer]
+  - main [ref=e23]:
+    - generic [ref=e24]:
+      - heading "Settings & Configuration" [level=2] [ref=e25]
+      - paragraph [ref=e26]: Configure API keys, AI models, and database connections for your lead generation system.
+      - generic [ref=e27]:
+        - button "🔑 API Keys" [active] [ref=e28] [cursor=pointer]
+        - button "🤖 AI Configuration" [ref=e29] [cursor=pointer]
+        - button "💾 Database" [ref=e30] [cursor=pointer]
+      - generic [ref=e31]:
+        - heading "API Key Management" [level=3] [ref=e32]
+        - paragraph [ref=e33]: Configure your API keys to enable AI-powered icebreaker generation and lead scraping.
+        - generic [ref=e34]:
+          - generic [ref=e35]: OpenAI API Key *
+          - textbox "OpenAI API Key *" [ref=e36]:
+            - /placeholder: ••••••••••••••••
+            - text: "************************************************************************************************************************************************************39D-NWkA"
+          - generic [ref=e37]: ✅ API key is saved and working. Enter a new key to replace it.
+        - generic [ref=e38]:
+          - generic [ref=e39]: Apify API Key (Optional)
+          - textbox "Apify API Key (Optional)" [ref=e40]:
+            - /placeholder: ••••••••••••••••
+            - text: "**************************************Cc1K7Awf"
+          - generic [ref=e41]: ✅ API key is saved. Enter a new key to replace it.
+        - generic [ref=e42]:
+          - generic [ref=e43]: Bouncer API Key (Optional)
+          - textbox "Bouncer API Key (Optional)" [ref=e44]:
+            - /placeholder: ••••••••••••••••
+            - text: "**************ey_12345"
+          - generic [ref=e45]: ✅ API key is saved. Enter a new key to replace it.
+        - generic [ref=e46]:
+          - generic [ref=e47]: LinkedIn Actor ID (Optional)
+          - textbox "LinkedIn Actor ID (Optional)" [ref=e48]:
+            - /placeholder: bebity~linkedin-premium-actor
+          - generic [ref=e49]: Apify actor ID for LinkedIn scraping. Leave default unless using a custom actor.
+        - generic [ref=e50]:
+          - button "Save API Keys" [ref=e51] [cursor=pointer]
+          - button "Test OpenAI Connection" [ref=e52] [cursor=pointer]
+        - generic [ref=e53]:
+          - heading "Getting Your API Keys" [level=4] [ref=e54]
+          - generic [ref=e55]:
+            - heading "OpenAI API Key" [level=5] [ref=e56]
+            - list [ref=e57]:
+              - listitem [ref=e58]:
+                - text: Go to
+                - link "OpenAI API Keys" [ref=e59] [cursor=pointer]:
+                  - /url: https://platform.openai.com/api-keys
+              - listitem [ref=e60]: Click "Create new secret key"
+              - listitem [ref=e61]: Copy and paste the key above
+          - generic [ref=e62]:
+            - heading "Apify API Key (Optional)" [level=5] [ref=e63]
+            - list [ref=e64]:
+              - listitem [ref=e65]:
+                - text: Go to
+                - link "Apify Integrations" [ref=e66] [cursor=pointer]:
+                  - /url: https://console.apify.com/account/integrations
+              - listitem [ref=e67]: Copy your API token
+              - listitem [ref=e68]: Paste it above
+```
