@@ -12,7 +12,7 @@ echo ""
 
 # Check for command line arguments
 INCLUDE_FASTAPI=false
-if [ "$1" == "-" ] || [ "$1" == "-" ]; then
+if [ "$1" == "--with-fastapi" ] || [ "$1" == "-f" ]; then
     INCLUDE_FASTAPI=true
     echo -e "${BLUE}Including FastAPI server on port 8000${NC}"
     echo ""
@@ -197,8 +197,8 @@ echo -e "${YELLOW}Press Ctrl+C to stop all servers${NC}"
 echo ""
 echo -e "${YELLOW}Usage:${NC}"
 echo -e "  ${BLUE}./start-dev.sh${NC}              - Start frontend and Express backend"
-echo -e "  ${BLUE}./start-dev.sh -${NC} - Include FastAPI server on port 8000"
-echo -e "  ${BLUE}./start-dev.sh -${NC}            - Short form for -"
+echo -e "  ${BLUE}./start-dev.sh --with-fastapi${NC} - Include FastAPI server on port 8000"
+echo -e "  ${BLUE}./start-dev.sh -f${NC}            - Short form for --with-fastapi"
 echo ""
 
 # Keep script running and monitor processes

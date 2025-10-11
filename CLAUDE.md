@@ -808,3 +808,4 @@ Ensure these ports are available before starting. The `start-dev.sh` script will
 ---
 
 **Remember: Default to action. Research first, implement with tests, document as you go, and communicate through Linear. You have all the tools you need to work autonomously.**
+- use the todo to organize and orcastright agents
