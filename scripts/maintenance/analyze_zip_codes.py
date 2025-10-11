@@ -9,9 +9,10 @@ import json
 import logging
 from pathlib import Path
 
-# Add lead_generation modules to path
-sys.path.append(str(Path(__file__).parent / 'lead_generation' / 'modules'))
-sys.path.append(str(Path(__file__).parent / 'lead_generation'))
+# Add lead_generation modules to path (go up 2 directories to reach project root)
+project_root = Path(__file__).parent.parent.parent
+sys.path.append(str(project_root / 'lead_generation' / 'modules'))
+sys.path.append(str(project_root / 'lead_generation'))
 
 from coverage_analyzer import CoverageAnalyzer
 
