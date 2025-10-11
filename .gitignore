@@ -55,3 +55,10 @@ debug_*.js
 
 # Archive directory (cleanup backups)
 archive/
+
+# Archived documentation and reports
+docs/archived-reports/
+
+# Data and logs directories
+data/
+logs/
