@@ -12,7 +12,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent))
 
 # Import modules
-from modules.linkedin_scraper import LinkedInScraper
+from modules.linkedin_scraper_parallel import LinkedInScraperParallel as LinkedInScraper
 from modules.bouncer_verifier import BouncerVerifier
 import config
 

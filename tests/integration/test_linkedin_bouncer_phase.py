@@ -13,7 +13,7 @@ import json
 # Add project root to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
-from lead_generation.modules.linkedin_scraper import LinkedInScraper
+from lead_generation.modules.linkedin_scraper_parallel import LinkedInScraperParallel as LinkedInScraper
 from lead_generation.modules.bouncer_verifier import BouncerVerifier
 
 
