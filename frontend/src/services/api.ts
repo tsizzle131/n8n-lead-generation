@@ -57,6 +57,7 @@ export interface APIKeys {
   apify_api_key?: string;
   bouncer_api_key?: string;
   vapi_api_key?: string;
+  instantly_api_key?: string;
   linkedin_actor_id?: string;
 }
 

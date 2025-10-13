@@ -6,6 +6,7 @@ const ApiKeyManager: React.FC = () => {
     openai_api_key: '',
     apify_api_key: '',
     bouncer_api_key: '',
+    instantly_api_key: '',
     linkedin_actor_id: ''
   });
   const [loading, setLoading] = useState(false);
@@ -56,6 +57,10 @@ const ApiKeyManager: React.FC = () => {
 
       if (apiKeys.bouncer_api_key && !apiKeys.bouncer_api_key.includes('*')) {
         keysToSave.bouncer_api_key = apiKeys.bouncer_api_key;
+      }
+
+      if (apiKeys.instantly_api_key && !apiKeys.instantly_api_key.includes('*')) {
+        keysToSave.instantly_api_key = apiKeys.instantly_api_key;
       }
 
       // LinkedIn actor ID is not sensitive, always save it
@@ -182,6 +187,24 @@ const ApiKeyManager: React.FC = () => {
       </div>
 
       <div className="form-group">
+        <label htmlFor="instantly-key">Instantly.ai API Key</label>
+        <input
+          id="instantly-key"
+          type="password"
+          placeholder={apiKeys.instantly_api_key?.includes('*') ? 'Key is saved (enter new key to change)' : 'Enter Instantly.ai API key'}
+          value={apiKeys.instantly_api_key || ''}
+          onChange={(e) => handleInputChange('instantly_api_key', e.target.value)}
+          className="api-key-input"
+        />
+        <small>
+          {apiKeys.instantly_api_key?.includes('*')
+            ? '✅ API key is saved. Enter a new key to replace it.'
+            : 'Required for exporting campaigns to Instantly.ai for email automation'
+          }
+        </small>
+      </div>
+
+      <div className="form-group">
         <label htmlFor="linkedin-actor">LinkedIn Actor ID (Optional)</label>
         <input
           id="linkedin-actor"
@@ -242,6 +265,18 @@ const ApiKeyManager: React.FC = () => {
             3. Paste it above<br/>
             <br/>
             <strong>What it does:</strong> Verifies email deliverability and protects sender reputation by validating emails before use.
+          </p>
+        </div>
+
+        <div className="info-section">
+          <h4>Instantly.ai API Key</h4>
+          <p>
+            1. Log in to <a href="https://app.instantly.ai" target="_blank" rel="noopener noreferrer">Instantly.ai</a><br/>
+            2. Go to Settings → API & Integrations<br/>
+            3. Click "Generate New API Key"<br/>
+            4. Copy and paste the key above<br/>
+            <br/>
+            <strong>What it does:</strong> Enables one-click export of campaigns to Instantly.ai for automated email outreach with your AI-generated icebreakers.
           </p>
         </div>
 
