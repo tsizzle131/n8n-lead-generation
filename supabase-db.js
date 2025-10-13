@@ -429,6 +429,8 @@ const exportData = {
         website: biz.website,
         email: email || '',
         emailSource: emailSource,
+        icebreaker: biz.icebreaker || '',
+        subjectLine: biz.subject_line || '',
         facebook: biz.facebook_url || biz.gmaps_facebook_enrichments?.[0]?.facebook_url || '',
         linkedin: linkedinUrl,
         linkedinEmail: linkedinEmail,

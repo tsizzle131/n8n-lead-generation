@@ -1,5 +1,7 @@
 const express = require('express');
 const cors = require('cors');
+const rateLimit = require('express-rate-limit');
+const { body, validationResult } = require('express-validator');
 const { spawn, execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
@@ -38,7 +40,21 @@ try {
 const app = express();
 const port = 5001;
 
-app.use(cors());
+// Security: Restrict CORS to known origins
+const allowedOrigins = ['http://localhost:3000', 'http://localhost:5001'];
+app.use(cors({
+  origin: function(origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true
+}));
+
 app.use(express.json());
 
 // Increase timeout for long-running Apollo scrapes
@@ -423,7 +439,33 @@ app.post('/api/settings/test-bouncer', async (req, res) => {
   }
 });
 
-app.post('/generate-icebreaker', async (req, res) => {
+// Rate limiting middleware for icebreaker endpoint
+const icebreakerLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // Limit each IP to 100 requests per window
+  message: 'Too many icebreaker requests from this IP, please try again later.',
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// Validation middleware for icebreaker endpoint
+const validateIcebreakerRequest = [
+  body('contact').isObject().withMessage('Contact must be an object'),
+  body('contact.email').isEmail().withMessage('Valid email is required'),
+  body('contact.name').optional().isString().withMessage('Name must be a string'),
+  body('custom_prompts').optional().isObject().withMessage('Custom prompts must be an object'),
+];
+
+app.post('/generate-icebreaker',
+  icebreakerLimiter,
+  validateIcebreakerRequest,
+  async (req, res) => {
+  // Check validation results
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ errors: errors.array() });
+  }
+
   const { contact, custom_prompts } = req.body;
   const openaiKey = appState.apiKeys.openai_api_key;
   
@@ -2840,7 +2882,7 @@ app.post('/api/gmaps/campaigns/:campaignId/execute', async (req, res) => {
         const executePythonCampaign = () => {
           return new Promise((resolve, reject) => {
             const pythonProcess = spawn('python3', [
-              path.join(__dirname, 'execute_gmaps_campaign.py')
+              path.join(__dirname, 'scripts', 'maintenance', 'execute_gmaps_campaign.py')
             ]);
 
             // Prepare input data
@@ -3699,10 +3741,12 @@ app.get('/api/gmaps/campaigns/:campaignId/export', async (req, res) => {
   // Create CSV header
   const headers = [
     'Business Name',
-    'Address', 
+    'Address',
     'Phone',
     'Website',
     'Email',
+    'Icebreaker',
+    'Subject Line',
     'LinkedIn URL',
     'Facebook URL',
     'Email Source',
@@ -3730,6 +3774,8 @@ app.get('/api/gmaps/campaigns/:campaignId/export', async (req, res) => {
       business.phone || '',
       business.website || '',
       business.email || '',
+      business.icebreaker || '',
+      business.subjectLine || '',
       business.linkedInUrl || business.linkedin || '',
       business.facebookUrl || business.facebook || '',
       emailSource,

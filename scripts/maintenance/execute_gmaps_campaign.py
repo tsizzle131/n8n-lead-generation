@@ -10,8 +10,8 @@ import json
 import logging
 from pathlib import Path
 
-# Add lead_generation to path
-sys.path.insert(0, str(Path(__file__).parent / 'lead_generation'))
+# Add lead_generation to path (go up 2 dirs to project root, then into lead_generation)
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'lead_generation'))
 
 from modules.gmaps_campaign_manager import GmapsCampaignManager
 
