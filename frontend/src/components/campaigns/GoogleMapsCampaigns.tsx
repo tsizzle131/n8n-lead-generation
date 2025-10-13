@@ -114,22 +114,22 @@ const GoogleMapsCampaigns: React.FC = () => {
   const handleExportCSV = async (campaignId: string, campaignName: string) => {
     try {
       const response = await fetch(`http://localhost:5001/api/gmaps/campaigns/${campaignId}/export`);
-      
+
       if (!response.ok) {
         throw new Error('Failed to export campaign data');
       }
-      
+
       // Get the filename from the Content-Disposition header if available
       const contentDisposition = response.headers.get('Content-Disposition');
       let filename = `gmaps-export-${campaignName.replace(/[^a-zA-Z0-9]/g, '_')}.csv`;
-      
+
       if (contentDisposition) {
-        const filenameMatch = contentDisposition.match(/filename="(.+)"/);  
+        const filenameMatch = contentDisposition.match(/filename="(.+)"/);
         if (filenameMatch) {
           filename = filenameMatch[1];
         }
       }
-      
+
       // Convert response to blob and download
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
@@ -142,6 +142,49 @@ const GoogleMapsCampaigns: React.FC = () => {
       window.URL.revokeObjectURL(url);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to export campaign data');
+    }
+  };
+
+  const handleExportToInstantly = async (campaignId: string, campaignName: string) => {
+    const confirmed = window.confirm(
+      `Export "${campaignName}" to Instantly.ai?\n\n` +
+      `This will create a new campaign in your Instantly account with all leads and AI-generated icebreakers.`
+    );
+
+    if (!confirmed) return;
+
+    try {
+      setError(null);
+      const exportCampaignName = `${campaignName} - ${new Date().toISOString().split('T')[0]}`;
+
+      const response = await fetch(`http://localhost:5001/api/gmaps/campaigns/${campaignId}/export-to-instantly`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          campaignName: exportCampaignName,
+          timezone: 'America/Los_Angeles',
+          hoursFrom: '09:00',
+          hoursTo: '17:00'
+        })
+      });
+
+      const result = await response.json();
+
+      if (!response.ok || !result.success) {
+        throw new Error(result.error || 'Export failed');
+      }
+
+      alert(
+        `✅ Successfully exported to Instantly.ai!\n\n` +
+        `Campaign: ${result.campaign_name}\n` +
+        `Leads exported: ${result.leads_exported}/${result.total_businesses}\n\n` +
+        `View campaign:\n${result.campaign_url}`
+      );
+
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to export to Instantly';
+      setError(errorMessage);
+      alert(`❌ Export failed: ${errorMessage}`);
     }
   };
 
@@ -420,11 +463,19 @@ const GoogleMapsCampaigns: React.FC = () => {
                   )}
                   {campaign.status === 'completed' && (
                     <>
-                      <button 
+                      <button
                         className="btn btn-secondary btn-sm"
                         onClick={() => handleExportCSV(campaign.id, campaign.name)}
                       >
                         Export CSV
+                      </button>
+                      <button
+                        className="btn btn-primary btn-sm"
+                        onClick={() => handleExportToInstantly(campaign.id, campaign.name)}
+                        disabled={!campaign.total_emails_found || campaign.total_emails_found === 0}
+                        title={!campaign.total_emails_found || campaign.total_emails_found === 0 ? 'No emails to export' : 'Export to Instantly.ai'}
+                      >
+                        Export to Instantly
                       </button>
                       <button className="btn btn-secondary btn-sm">
                         View Details

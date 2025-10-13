@@ -3819,7 +3819,7 @@ app.get('/api/gmaps/campaigns/:campaignId/export', async (req, res) => {
 
 app.delete('/api/gmaps/campaigns/:campaignId', async (req, res) => {
   const { campaignId } = req.params;
-  
+
   try {
     await gmapsCampaigns.delete(campaignId);
     res.json({ message: 'Campaign deleted successfully' });
@@ -3830,6 +3830,127 @@ app.delete('/api/gmaps/campaigns/:campaignId', async (req, res) => {
     } else {
       res.status(500).json({ error: 'Failed to delete campaign' });
     }
+  }
+});
+
+// Export campaign to Instantly.ai
+app.post('/api/gmaps/campaigns/:campaignId/export-to-instantly', async (req, res) => {
+  const { campaignId } = req.params;
+  const {
+    campaignName,
+    timezone = 'America/Los_Angeles',
+    hoursFrom = '09:00',
+    hoursTo = '17:00'
+  } = req.body;
+
+  try {
+    console.log(`📤 Exporting campaign ${campaignId} to Instantly.ai`);
+
+    // Get Instantly API key
+    const instantlyApiKey = appState.apiKeys?.instantly_api_key;
+    if (!instantlyApiKey) {
+      return res.status(400).json({
+        error: 'Instantly.ai API key not configured. Please add it in Settings.'
+      });
+    }
+
+    // Get Supabase credentials
+    const supabaseUrl = process.env.SUPABASE_URL;
+    const supabaseKey = process.env.SUPABASE_KEY;
+
+    if (!supabaseUrl || !supabaseKey) {
+      return res.status(500).json({
+        error: 'Supabase credentials not configured'
+      });
+    }
+
+    // Get campaign info for naming
+    const campaign = await gmapsCampaigns.get(campaignId);
+    if (!campaign) {
+      return res.status(404).json({ error: 'Campaign not found' });
+    }
+
+    const finalCampaignName = campaignName || `${campaign.name} - ${new Date().toISOString().split('T')[0]}`;
+
+    // Call Python export script
+    const scriptPath = path.join(__dirname, 'lead_generation', 'scripts', 'export_to_instantly.py');
+    const args = [
+      scriptPath,
+      '--campaign-id', campaignId,
+      '--campaign-name', finalCampaignName,
+      '--timezone', timezone,
+      '--hours-from', hoursFrom,
+      '--hours-to', hoursTo,
+      '--api-key', instantlyApiKey,
+      '--supabase-url', supabaseUrl,
+      '--supabase-key', supabaseKey,
+      '--organization-id', appState.currentOrganization || ''
+    ];
+
+    const exportPromise = new Promise((resolve, reject) => {
+      const process = spawn(pythonCmd, args);
+      let output = '';
+      let errorOutput = '';
+
+      process.stdout.on('data', (data) => {
+        const chunk = data.toString();
+        output += chunk;
+        console.log(chunk);
+      });
+
+      process.stderr.on('data', (data) => {
+        const chunk = data.toString();
+        errorOutput += chunk;
+        console.error(chunk);
+      });
+
+      process.on('close', (code) => {
+        if (code === 0) {
+          try {
+            const result = JSON.parse(output.trim().split('\n').pop());
+            resolve(result);
+          } catch (e) {
+            reject(new Error(`Failed to parse export result: ${e.message}`));
+          }
+        } else {
+          reject(new Error(errorOutput || 'Export failed'));
+        }
+      });
+
+      process.on('error', (err) => {
+        reject(new Error(`Failed to start export process: ${err.message}`));
+      });
+    });
+
+    // Set timeout for export (5 minutes)
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('Export timeout after 5 minutes')), 300000);
+    });
+
+    const result = await Promise.race([exportPromise, timeoutPromise]);
+
+    if (result.success) {
+      console.log('✅ Export complete:', result);
+      res.json({
+        success: true,
+        campaign_id: result.campaign_id,
+        campaign_name: result.campaign_name,
+        campaign_url: result.campaign_url,
+        leads_exported: result.leads_exported,
+        total_businesses: result.total_businesses
+      });
+    } else {
+      console.error('❌ Export failed:', result.error);
+      res.status(500).json({
+        error: result.error || 'Export failed'
+      });
+    }
+
+  } catch (error) {
+    console.error('Error exporting to Instantly:', error);
+    res.status(500).json({
+      error: error.message || 'Export failed'
+    });
   }
 });
 
