@@ -8,6 +8,18 @@
 
 ## 🔴 PHASE 1: CRITICAL FIXES (Week 1)
 
+### 🔥 IN PROGRESS: Transaction Boundary Fix (HIGH PRIORITY)
+- [▶] Build PostgreSQL stored functions to fix transaction boundary gaps
+  - Started: 2025-10-12
+  - Plan: migrations/fix_transaction_boundaries.sql
+  - Scope: 8 critical operations need atomic transaction wrappers
+  - Phase: Critical Fixes (prevents data loss)
+  - Strategic Goal: Fix 94.12% database integrity to 100% by eliminating transaction gaps
+  - Priority: HIGH (data loss prevention)
+  - Estimated: 3-4 hours
+
+## 🔴 PHASE 1: CRITICAL FIXES (Week 1)
+
 ### 1.1 Root Directory Cleanup [COMPLETE]
 - [x] Create docs/archived-reports/ subdirectories (bug-fixes, feature-implementations, test-reports)
 - [x] Move 40+ debug reports to appropriate subdirectories
