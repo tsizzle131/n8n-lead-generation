@@ -23,13 +23,15 @@ const Settings: React.FC = () => {
     apify_api_key: '',
     vapi_api_key: '',
     bouncer_api_key: '',
+    instantly_api_key: '',
     linkedin_actor_id: ''
   });
-  const [apiKeysStatus, setApiKeysStatus] = useState<{ openai: boolean; apify: boolean; vapi: boolean; bouncer: boolean; linkedin: boolean }>({
+  const [apiKeysStatus, setApiKeysStatus] = useState<{ openai: boolean; apify: boolean; vapi: boolean; bouncer: boolean; instantly: boolean; linkedin: boolean }>({
     openai: false,
     apify: false,
     vapi: false,
     bouncer: false,
+    instantly: false,
     linkedin: false
   });
   
@@ -76,6 +78,7 @@ const Settings: React.FC = () => {
       apify: !!keys.apify_api_key && keys.apify_api_key.length > 10,
       vapi: !!keys.vapi_api_key && keys.vapi_api_key.length > 10,
       bouncer: !!keys.bouncer_api_key && keys.bouncer_api_key.length > 10,
+      instantly: !!keys.instantly_api_key && keys.instantly_api_key.length > 10,
       linkedin: !!keys.linkedin_actor_id && keys.linkedin_actor_id.length > 5
     });
   };
@@ -258,6 +261,22 @@ const Settings: React.FC = () => {
               <small className="success-text">✅ API key is saved. Enter a new key to replace it.</small>
             ) : (
               <small>Optional: Used for email verification (verify deliverability)</small>
+            )}
+          </div>
+
+          <div className="form-group">
+            <label htmlFor="instantly-key">Instantly.ai API Key</label>
+            <input
+              id="instantly-key"
+              type="password"
+              value={apiKeys.instantly_api_key || ''}
+              onChange={(e) => handleApiKeyChange('instantly_api_key', e.target.value)}
+              placeholder={apiKeysStatus.instantly ? "••••••••••••••••" : "Enter Instantly.ai API key"}
+            />
+            {apiKeysStatus.instantly ? (
+              <small className="success-text">✅ API key is saved. Enter a new key to replace it.</small>
+            ) : (
+              <small>Required for exporting campaigns to Instantly.ai for email automation</small>
             )}
           </div>
 
