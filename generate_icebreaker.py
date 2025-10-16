@@ -23,11 +23,13 @@ def main():
         contact_json = sys.argv[2]
         prompts_json = sys.argv[3] if len(sys.argv) > 3 else '{}'
         settings_json = sys.argv[4] if len(sys.argv) > 4 else '{}'
+        organization_json = sys.argv[5] if len(sys.argv) > 5 else '{}'
 
         # Parse inputs
         contact = json.loads(contact_json)
         prompts = json.loads(prompts_json)
         settings = json.loads(settings_json)
+        organization_data = json.loads(organization_json)
 
         # Initialize AI processor
         ai_processor = AIProcessor(openai_key)
@@ -35,8 +37,8 @@ def main():
         # Extract website summaries (passed in contact or empty)
         website_summaries = contact.get('website_summaries', [])
 
-        # Generate icebreaker
-        result = ai_processor.generate_icebreaker(contact, website_summaries)
+        # Generate icebreaker with organization data
+        result = ai_processor.generate_icebreaker(contact, website_summaries, organization_data if organization_data else None)
 
         # Output result
         print(json.dumps(result))

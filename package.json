@@ -19,6 +19,7 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.56.0",
-    "nodemon": "^3.0.1"
+    "nodemon": "^3.0.1",
+    "playwright": "^1.56.0"
   }
 }

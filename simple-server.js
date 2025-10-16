@@ -165,7 +165,7 @@ app.get('/api-keys', (req, res) => {
 });
 
 app.post('/api-keys', (req, res) => {
-  const { openai_api_key, apify_api_key, bouncer_api_key, linkedin_actor_id } = req.body;
+  const { openai_api_key, apify_api_key, bouncer_api_key, vapi_api_key, instantly_api_key, linkedin_actor_id } = req.body;
 
   // Only save if it's a real API key (not masked)
   if (openai_api_key && !openai_api_key.includes('*')) {
@@ -187,6 +187,20 @@ app.post('/api-keys', (req, res) => {
     console.log('Bouncer API key updated with real key');
   } else if (bouncer_api_key && bouncer_api_key.includes('*')) {
     console.log('Ignoring masked Bouncer API key - keeping existing real key');
+  }
+
+  if (vapi_api_key && !vapi_api_key.includes('*')) {
+    appState.apiKeys.vapi_api_key = vapi_api_key;
+    console.log('VAPI API key updated with real key');
+  } else if (vapi_api_key && vapi_api_key.includes('*')) {
+    console.log('Ignoring masked VAPI API key - keeping existing real key');
+  }
+
+  if (instantly_api_key && !instantly_api_key.includes('*')) {
+    appState.apiKeys.instantly_api_key = instantly_api_key;
+    console.log('Instantly.ai API key updated with real key');
+  } else if (instantly_api_key && instantly_api_key.includes('*')) {
+    console.log('Ignoring masked Instantly.ai API key - keeping existing real key');
   }
 
   // LinkedIn actor ID is not sensitive, just save it
@@ -468,19 +482,38 @@ app.post('/generate-icebreaker',
 
   const { contact, custom_prompts } = req.body;
   const openaiKey = appState.apiKeys.openai_api_key;
-  
+
   if (!openaiKey) {
     return res.status(400).json({ error: 'OpenAI API key not configured' });
   }
 
   try {
+    // Fetch organization data for personalized icebreakers
+    let organizationData = null;
+    if (appState.currentOrganization) {
+      try {
+        const { data, error } = await supabase
+          .from('organizations')
+          .select('product_name, product_description, value_proposition, target_audience, messaging_tone, industry')
+          .eq('id', appState.currentOrganization)
+          .single();
+
+        if (!error && data) {
+          organizationData = data;
+        }
+      } catch (err) {
+        console.log('Could not fetch organization data:', err.message);
+      }
+    }
+
     // Call Python script to generate icebreaker
     const python = spawn(pythonCmd, [
       path.join(__dirname, 'generate_icebreaker.py'),
       openaiKey,
       JSON.stringify(contact),
       JSON.stringify(custom_prompts || appState.prompts),
-      JSON.stringify(appState.settings)
+      JSON.stringify(appState.settings),
+      JSON.stringify(organizationData || {})
     ]);
 
     let result = '';
@@ -3838,7 +3871,7 @@ app.post('/api/gmaps/campaigns/:campaignId/export-to-instantly', async (req, res
   const { campaignId } = req.params;
   const {
     campaignName,
-    timezone = 'America/Los_Angeles',
+    timezone = 'America/Chicago',
     hoursFrom = '09:00',
     hoursTo = '17:00'
   } = req.body;
@@ -3865,7 +3898,7 @@ app.post('/api/gmaps/campaigns/:campaignId/export-to-instantly', async (req, res
     }
 
     // Get campaign info for naming
-    const campaign = await gmapsCampaigns.get(campaignId);
+    const campaign = await gmapsCampaigns.getById(campaignId);
     if (!campaign) {
       return res.status(404).json({ error: 'Campaign not found' });
     }
