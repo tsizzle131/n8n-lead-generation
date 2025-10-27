@@ -2684,7 +2684,10 @@ function saveGMapsCampaigns() {
 app.get('/api/gmaps/campaigns', async (req, res) => {
   console.log('📍 Fetching Google Maps campaigns from Supabase');
   try {
-    const campaigns = await gmapsCampaigns.getAll();
+    // Filter campaigns by current organization
+    const organizationId = appState.currentOrganization;
+    const campaigns = await gmapsCampaigns.getAll(organizationId);
+    console.log(`  ✅ Found ${campaigns.length} campaigns for organization: ${organizationId}`);
     res.json({ campaigns });
   } catch (error) {
     console.error('Error fetching campaigns:', error);
@@ -3921,7 +3924,7 @@ app.post('/api/gmaps/campaigns/:campaignId/export-to-instantly', async (req, res
     ];
 
     const exportPromise = new Promise((resolve, reject) => {
-      const process = spawn(pythonCmd, args);
+      const process = spawn(pythonCmd, ['-B', ...args]);
       let output = '';
       let errorOutput = '';
 
