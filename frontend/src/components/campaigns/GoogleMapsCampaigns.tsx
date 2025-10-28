@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useCampaigns, type Campaign } from '../../hooks';
 import '../../styles/GoogleMapsCampaigns.css';
@@ -8,6 +8,15 @@ interface CampaignFormData {
   location: string;
   keywords: string;
   coverage_profile: 'budget' | 'balanced' | 'aggressive';
+}
+
+interface ProductConfig {
+  product_name?: string;
+  product_description?: string;
+  value_proposition?: string;
+  target_audience?: string;
+  industry?: string;
+  messaging_tone?: string;
 }
 
 const GoogleMapsCampaigns: React.FC = () => {
@@ -33,6 +42,60 @@ const GoogleMapsCampaigns: React.FC = () => {
   const [executing, setExecuting] = useState<string | null>(null);
   const [creatingCampaign, setCreatingCampaign] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [productConfig, setProductConfig] = useState<ProductConfig | null>(null);
+  const [loadingProductConfig, setLoadingProductConfig] = useState(true);
+  const [currentOrgId, setCurrentOrgId] = useState<string | null>(null);
+
+  // Load current organization and product config
+  useEffect(() => {
+    const loadProductConfig = async () => {
+      try {
+        // First get current organization
+        const orgResponse = await fetch('http://localhost:5001/current-organization');
+        if (orgResponse.ok) {
+          const orgData = await orgResponse.json();
+          setCurrentOrgId(orgData.organizationId);
+
+          // Then load product config
+          if (orgData.organizationId) {
+            const configResponse = await fetch(`http://localhost:5001/organizations/${orgData.organizationId}/product-config`);
+            if (configResponse.ok) {
+              const config = await configResponse.json();
+              setProductConfig(config);
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Error loading product config:', err);
+      } finally {
+        setLoadingProductConfig(false);
+      }
+    };
+
+    loadProductConfig();
+  }, []);
+
+  // Calculate product config completion percentage
+  const calculateConfigCompletion = (): number => {
+    if (!productConfig) return 0;
+
+    const requiredFields = [
+      'product_name',
+      'product_description',
+      'value_proposition',
+      'target_audience'
+    ];
+
+    const filledFields = requiredFields.filter(field =>
+      productConfig[field as keyof ProductConfig] &&
+      String(productConfig[field as keyof ProductConfig]).trim().length > 0
+    );
+
+    return Math.round((filledFields.length / requiredFields.length) * 100);
+  };
+
+  const configCompletion = calculateConfigCompletion();
+  const isProductConfigComplete = configCompletion === 100;
 
   const handleCreateCampaign = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -148,7 +211,11 @@ const GoogleMapsCampaigns: React.FC = () => {
   const handleExportToInstantly = async (campaignId: string, campaignName: string) => {
     const confirmed = window.confirm(
       `Export "${campaignName}" to Instantly.ai?\n\n` +
-      `This will create a new campaign in your Instantly account with all leads and AI-generated icebreakers.`
+      `This will automatically create a new campaign in your Instantly account with:\n` +
+      `• All leads with emails\n` +
+      `• AI-generated icebreakers and subject lines\n` +
+      `• Default email sequence template\n\n` +
+      `Note: You must have at least one sending email account configured in Instantly.ai`
     );
 
     if (!confirmed) return;
@@ -162,7 +229,7 @@ const GoogleMapsCampaigns: React.FC = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           campaignName: exportCampaignName,
-          timezone: 'America/Los_Angeles',
+          timezone: 'America/Chicago',
           hoursFrom: '09:00',
           hoursTo: '17:00'
         })
@@ -240,6 +307,75 @@ const GoogleMapsCampaigns: React.FC = () => {
           {showCreateForm ? 'Cancel' : '+ New Campaign'}
         </button>
       </div>
+
+      {/* Product Configuration Warning Banner */}
+      {!loadingProductConfig && !isProductConfigComplete && (
+        <div className="alert alert-warning" style={{
+          margin: '20px 0',
+          padding: '15px 20px',
+          borderLeft: '4px solid #f59e0b',
+          backgroundColor: '#fffbeb'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'start', gap: '12px' }}>
+            <span style={{ fontSize: '24px' }}>⚠️</span>
+            <div style={{ flex: 1 }}>
+              <h4 style={{ margin: '0 0 8px 0', color: '#92400e' }}>
+                Product Configuration Incomplete ({configCompletion}% Complete)
+              </h4>
+              <p style={{ margin: '0 0 12px 0', color: '#78350f' }}>
+                <strong>Your AI-generated emails will be generic without product details!</strong>
+                {' '}Complete your product configuration to generate highly personalized,
+                conversion-optimized icebreakers and subject lines.
+              </p>
+              <div style={{ marginBottom: '12px' }}>
+                <div style={{
+                  height: '8px',
+                  backgroundColor: '#fef3c7',
+                  borderRadius: '4px',
+                  overflow: 'hidden'
+                }}>
+                  <div style={{
+                    height: '100%',
+                    width: `${configCompletion}%`,
+                    backgroundColor: configCompletion < 50 ? '#ef4444' : configCompletion < 100 ? '#f59e0b' : '#10b981',
+                    transition: 'width 0.3s ease'
+                  }}></div>
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                {currentOrgId && (
+                  <a
+                    href="/organizations"
+                    className="btn btn-warning"
+                    style={{
+                      padding: '8px 16px',
+                      fontSize: '14px',
+                      textDecoration: 'none',
+                      backgroundColor: '#f59e0b',
+                      color: 'white'
+                    }}
+                  >
+                    📝 Complete Product Setup
+                  </a>
+                )}
+                <div style={{
+                  padding: '8px 12px',
+                  fontSize: '12px',
+                  color: '#92400e',
+                  backgroundColor: '#fef3c7',
+                  borderRadius: '4px'
+                }}>
+                  Missing: {['product_name', 'product_description', 'value_proposition', 'target_audience']
+                    .filter(field => !productConfig?.[field as keyof ProductConfig] ||
+                                    !String(productConfig[field as keyof ProductConfig]).trim())
+                    .map(field => field.replace('_', ' '))
+                    .join(', ')}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Background refresh indicator */}
       {isFetching && campaigns.length > 0 && (

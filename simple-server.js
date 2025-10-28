@@ -6,7 +6,7 @@ const { spawn, execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { ApifyClient } = require('apify-client');
-const { gmapsCampaigns, gmapsCoverage, gmapsBusinesses, gmapsExport, initializeSchema } = require('./supabase-db');
+const { supabase, gmapsCampaigns, gmapsCoverage, gmapsBusinesses, gmapsExport, initializeSchema } = require('./supabase-db');
 
 // Script execution state
 let currentExecution = {
@@ -492,9 +492,9 @@ app.post('/generate-icebreaker',
     let organizationData = null;
     if (appState.currentOrganization) {
       try {
-        const { data, error } = await supabase
+        const { data, error} = await supabase
           .from('organizations')
-          .select('product_name, product_description, value_proposition, target_audience, messaging_tone, industry')
+          .select('name, product_name, product_description, value_proposition, target_audience, messaging_tone, industry')
           .eq('id', appState.currentOrganization)
           .single();
 

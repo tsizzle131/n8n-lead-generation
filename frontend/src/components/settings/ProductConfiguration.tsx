@@ -42,7 +42,7 @@ const ProductConfiguration: React.FC<ProductConfigurationProps> = ({
   const loadProductConfig = async () => {
     try {
       setLoading(true);
-      const response = await fetch(`http://localhost:8000/organizations/${organizationId}/product-config`);
+      const response = await fetch(`http://localhost:5001/organizations/${organizationId}/product-config`);
       if (response.ok) {
         const data = await response.json();
         setProductConfig(data);
@@ -102,7 +102,7 @@ const ProductConfiguration: React.FC<ProductConfigurationProps> = ({
         product_examples: examples
       };
 
-      const response = await fetch(`http://localhost:8000/organizations/${organizationId}/product-config`, {
+      const response = await fetch(`http://localhost:5001/organizations/${organizationId}/product-config`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(configToSave)
@@ -176,15 +176,74 @@ const ProductConfiguration: React.FC<ProductConfigurationProps> = ({
     { value: 'friendly', label: 'Friendly', description: 'Warm, approachable' }
   ];
 
+  // Calculate completion percentage
+  const calculateCompletion = (): number => {
+    const requiredFields = [
+      'product_name',
+      'product_description',
+      'value_proposition',
+      'target_audience'
+    ];
+
+    const filledFields = requiredFields.filter(field =>
+      productConfig[field as keyof ProductConfig] &&
+      String(productConfig[field as keyof ProductConfig]).trim().length > 0
+    );
+
+    return Math.round((filledFields.length / requiredFields.length) * 100);
+  };
+
+  const completion = calculateCompletion();
+
   return (
     <div className="product-configuration">
       <div className="config-header">
         <h2>{isNewOrganization ? 'Welcome! Let\'s Set Up Your Product' : 'Product Configuration'}</h2>
         <p>
-          {isNewOrganization 
+          {isNewOrganization
             ? 'Tell us about your product or service so we can create personalized outreach messages'
             : 'Define your product or service to generate personalized messaging'}
         </p>
+      </div>
+
+      {/* Completion Progress Indicator */}
+      <div style={{ margin: '20px 0', padding: '15px', backgroundColor: '#f9fafb', borderRadius: '8px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+          <span style={{ fontWeight: 600, color: '#111827' }}>
+            Setup Progress
+          </span>
+          <span style={{
+            fontWeight: 600,
+            color: completion === 100 ? '#10b981' : completion >= 50 ? '#f59e0b' : '#ef4444'
+          }}>
+            {completion}% Complete
+          </span>
+        </div>
+        <div style={{
+          height: '12px',
+          backgroundColor: '#e5e7eb',
+          borderRadius: '6px',
+          overflow: 'hidden'
+        }}>
+          <div style={{
+            height: '100%',
+            width: `${completion}%`,
+            backgroundColor: completion === 100 ? '#10b981' : completion >= 50 ? '#f59e0b' : '#ef4444',
+            transition: 'width 0.3s ease',
+            borderRadius: '6px'
+          }}></div>
+        </div>
+        <div style={{ marginTop: '8px', fontSize: '14px', color: '#6b7280' }}>
+          {completion === 100 ? (
+            <span style={{ color: '#10b981', fontWeight: 500 }}>
+              ✓ All required fields complete! Your AI emails will be highly personalized.
+            </span>
+          ) : (
+            <span>
+              Fill in all <strong style={{ color: '#111827' }}>4 required fields</strong> marked with * to generate personalized, high-converting emails.
+            </span>
+          )}
+        </div>
       </div>
 
       {isNewOrganization && (
@@ -229,51 +288,62 @@ const ProductConfiguration: React.FC<ProductConfigurationProps> = ({
         
         <div className="form-section">
           <div className="form-group">
-            <label>Product Name *</label>
+            <label>Product Name * <span style={{color: '#10b981', fontWeight: 'normal'}}>{productConfig.product_name && '✓'}</span></label>
             <input
               type="text"
               value={productConfig.product_name || ''}
               onChange={(e) => setProductConfig({ ...productConfig, product_name: e.target.value })}
-              placeholder="e.g., Premium Hair Extensions"
+              placeholder="e.g., Premium Hair Extensions, Custom Web Development, AI Chatbot Platform"
               className="form-control"
             />
-            <small>The name of your product or service</small>
+            <small style={{color: '#6b7280'}}>
+              💡 <strong>Tip:</strong> Be specific! "AI-Powered Website Chat" is better than "Software Solution"
+            </small>
           </div>
 
           <div className="form-group">
-            <label>Product Description *</label>
+            <label>Product Description * <span style={{color: '#10b981', fontWeight: 'normal'}}>{productConfig.product_description && '✓'}</span></label>
             <textarea
               value={productConfig.product_description || ''}
               onChange={(e) => setProductConfig({ ...productConfig, product_description: e.target.value })}
-              placeholder="Brief description of what you offer..."
+              placeholder="e.g., We build high-performance, custom websites and web applications that help businesses grow. Specializing in modern tech stacks, SEO optimization, and conversion-focused design."
               className="form-control"
-              rows={3}
+              rows={4}
             />
-            <small>What you offer in 1-2 sentences</small>
+            <small style={{color: '#6b7280'}}>
+              💡 <strong>What to include:</strong> What you do, what makes you different, key features/specialties<br/>
+              <span style={{color: '#9ca3af', fontSize: '12px'}}>Good: "100% human hair extensions sourced from India, available in 15 textures with wholesale options"</span>
+            </small>
           </div>
 
           <div className="form-group">
-            <label>Value Proposition *</label>
+            <label>Value Proposition * <span style={{color: '#10b981', fontWeight: 'normal'}}>{productConfig.value_proposition && '✓'}</span></label>
             <textarea
               value={productConfig.value_proposition || ''}
               onChange={(e) => setProductConfig({ ...productConfig, value_proposition: e.target.value })}
-              placeholder="The main benefit or problem you solve..."
+              placeholder="e.g., Turn your website into your #1 sales tool with fast, beautiful, conversion-optimized web development that actually drives revenue."
               className="form-control"
-              rows={2}
+              rows={3}
             />
-            <small>The key value you provide to customers</small>
+            <small style={{color: '#6b7280'}}>
+              💡 <strong>Focus on outcomes:</strong> What specific results do customers get? Use numbers when possible.<br/>
+              <span style={{color: '#9ca3af', fontSize: '12px'}}>Examples: "3x more online orders in 30 days" • "Save 10 hours/week on scheduling" • "Increase patient bookings by 40%"</span>
+            </small>
           </div>
 
           <div className="form-group">
-            <label>Target Audience *</label>
+            <label>Target Audience * <span style={{color: '#10b981', fontWeight: 'normal'}}>{productConfig.target_audience && '✓'}</span></label>
             <input
               type="text"
               value={productConfig.target_audience || ''}
               onChange={(e) => setProductConfig({ ...productConfig, target_audience: e.target.value })}
-              placeholder="e.g., Salon owners and professional stylists"
+              placeholder="e.g., Salon owners and professional stylists, Small dental practices, Restaurant owners with 5-50 employees"
               className="form-control"
             />
-            <small>Who would buy or use your product/service</small>
+            <small style={{color: '#6b7280'}}>
+              💡 <strong>Be specific about:</strong> Industry + Role/Size + Pain Point<br/>
+              <span style={{color: '#9ca3af', fontSize: '12px'}}>Good: "Busy restaurant owners struggling with online order management"</span>
+            </small>
           </div>
 
           <div className="form-row">
