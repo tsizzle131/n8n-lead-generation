@@ -2571,8 +2571,8 @@ app.post('/api/gmaps/campaigns/create', async (req, res) => {
       
       const analyzeZipCodes = () => {
         return new Promise((resolve, reject) => {
-          const pythonProcess = spawn('python3', [
-            path.join(__dirname, 'analyze_zip_codes.py')
+          const pythonProcess = spawn(pythonCmd, [
+            path.join(__dirname, 'scripts', 'maintenance', 'analyze_zip_codes.py')
           ]);
           
           const input = JSON.stringify({
