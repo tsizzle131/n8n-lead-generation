@@ -18,13 +18,19 @@ function handleError(error, defaultMessage = 'Database operation failed') {
 
 // Google Maps Campaign functions
 const gmapsCampaigns = {
-  // Get all campaigns
-  async getAll() {
-    const { data, error } = await supabase
+  // Get all campaigns (optionally filtered by organization)
+  async getAll(organizationId = null) {
+    let query = supabase
       .from('gmaps_campaigns')
-      .select('*')
-      .order('created_at', { ascending: false });
-    
+      .select('*');
+
+    // Filter by organization if provided
+    if (organizationId) {
+      query = query.eq('organization_id', organizationId);
+    }
+
+    const { data, error } = await query.order('created_at', { ascending: false });
+
     if (error) handleError(error, 'Failed to fetch campaigns');
     return data || [];
   },
@@ -276,9 +282,88 @@ const campaignCoverage = {
       .select('*')
       .eq('campaign_id', campaignId)
       .order('zip_code');
-    
+
     if (error) handleError(error, 'Failed to fetch coverage');
     return data || [];
+  },
+
+  // Update overlap metrics for a ZIP code
+  async updateOverlapMetrics(campaignId, zipCode, metrics) {
+    const { data, error } = await supabase
+      .from('gmaps_campaign_coverage')
+      .update({
+        estimated_overlap_percent: metrics.overlapPercent || null,
+        adjacent_zips: metrics.adjacentZips || null,
+        min_spacing_miles: metrics.minSpacing || null,
+        actual_unique_businesses: metrics.uniqueBusinesses || null,
+        updated_at: new Date().toISOString()
+      })
+      .eq('campaign_id', campaignId)
+      .eq('zip_code', zipCode)
+      .select()
+      .single();
+
+    if (error) handleError(error, 'Failed to update overlap metrics');
+    return data;
+  },
+
+  // Calculate and update overlap for all ZIPs in a campaign
+  async calculateCampaignOverlap(campaignId) {
+    // Get all businesses for this campaign grouped by ZIP
+    const { data: businesses, error: bizError } = await supabase
+      .from('gmaps_businesses')
+      .select('place_id, zip_code')
+      .eq('campaign_id', campaignId);
+
+    if (bizError) {
+      console.error('Failed to fetch businesses for overlap calculation:', bizError);
+      return null;
+    }
+
+    // Group by ZIP code
+    const zipGroups = {};
+    businesses.forEach(biz => {
+      if (!zipGroups[biz.zip_code]) {
+        zipGroups[biz.zip_code] = new Set();
+      }
+      zipGroups[biz.zip_code].add(biz.place_id);
+    });
+
+    // Calculate overlap for each ZIP
+    const overlapResults = {};
+    const allPlaceIds = new Set(businesses.map(b => b.place_id));
+
+    for (const [zipCode, placeIds] of Object.entries(zipGroups)) {
+      // Count how many of this ZIP's businesses also appear in other ZIPs
+      let duplicateCount = 0;
+      for (const placeId of placeIds) {
+        // Check if this place_id appears in any other ZIP
+        let foundInOther = false;
+        for (const [otherZip, otherPlaceIds] of Object.entries(zipGroups)) {
+          if (otherZip !== zipCode && otherPlaceIds.has(placeId)) {
+            foundInOther = true;
+            break;
+          }
+        }
+        if (foundInOther) duplicateCount++;
+      }
+
+      const overlapPercent = placeIds.size > 0
+        ? (duplicateCount / placeIds.size * 100).toFixed(2)
+        : 0;
+
+      overlapResults[zipCode] = {
+        overlapPercent: parseFloat(overlapPercent),
+        uniqueBusinesses: placeIds.size
+      };
+    }
+
+    // Update each ZIP's overlap metrics
+    for (const [zipCode, metrics] of Object.entries(overlapResults)) {
+      await this.updateOverlapMetrics(campaignId, zipCode, metrics);
+    }
+
+    return overlapResults;
   }
 };
 
