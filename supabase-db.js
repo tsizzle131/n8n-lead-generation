@@ -88,12 +88,26 @@ const gmapsCampaigns = {
         emails_found: 0
       }));
 
+      // Deduplicate by zip_code to avoid constraint violations
+      const uniqueCoverage = coverageData.filter((item, index, self) =>
+        index === self.findIndex(t => t.zip_code === item.zip_code)
+      );
+
+      console.log(`📍 Inserting ${uniqueCoverage.length} unique ZIP codes for campaign ${campaign.id}`);
+
+      // Use upsert to handle any conflicts gracefully
       const { error: coverageError } = await supabase
         .from('gmaps_campaign_coverage')
-        .insert(coverageData);
-      
+        .upsert(uniqueCoverage, {
+          onConflict: 'campaign_id,zip_code',
+          ignoreDuplicates: true
+        });
+
       if (coverageError) {
         console.error('Failed to insert ZIP codes:', coverageError);
+        // Don't throw - campaign is already created, ZIP insertion is non-critical at this point
+      } else {
+        console.log(`✅ Successfully inserted ${uniqueCoverage.length} ZIP codes`);
       }
     }
 

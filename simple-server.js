@@ -2917,7 +2917,7 @@ app.post('/api/gmaps/campaigns/:campaignId/execute', async (req, res) => {
 
         const executePythonCampaign = () => {
           return new Promise((resolve, reject) => {
-            const pythonProcess = spawn('python3', [
+            const pythonProcess = spawn(pythonCmd, [
               path.join(__dirname, 'scripts', 'maintenance', 'execute_gmaps_campaign.py')
             ]);
 
