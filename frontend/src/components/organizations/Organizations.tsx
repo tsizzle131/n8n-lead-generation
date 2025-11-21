@@ -28,9 +28,16 @@ interface Organization {
 interface OrganizationsProps {
   showCreateForm?: boolean;
   onCreateFormShown?: () => void;
+  productConfigOrgId?: string | null;
+  onProductConfigShown?: () => void;
 }
 
-const Organizations: React.FC<OrganizationsProps> = ({ showCreateForm: showCreateFormProp, onCreateFormShown }) => {
+const Organizations: React.FC<OrganizationsProps> = ({
+  showCreateForm: showCreateFormProp,
+  onCreateFormShown,
+  productConfigOrgId: productConfigOrgIdProp,
+  onProductConfigShown
+}) => {
   const [organizations, setOrganizations] = useState<Organization[]>([]);
   const [selectedOrg, setSelectedOrg] = useState<Organization | null>(null);
   const [currentOrgId, setCurrentOrgId] = useState<string | null>(null);
@@ -63,6 +70,17 @@ const Organizations: React.FC<OrganizationsProps> = ({ showCreateForm: showCreat
       }
     }
   }, [showCreateFormProp, onCreateFormShown]);
+
+  // Handle prop to show product config
+  useEffect(() => {
+    if (productConfigOrgIdProp) {
+      setProductConfigOrgId(productConfigOrgIdProp);
+      setShowProductConfig(true);
+      if (onProductConfigShown) {
+        onProductConfigShown();
+      }
+    }
+  }, [productConfigOrgIdProp, onProductConfigShown]);
 
   const loadOrganizations = async () => {
     try {

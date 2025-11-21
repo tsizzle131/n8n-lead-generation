@@ -10,34 +10,7 @@ function App() {
   const [activeTab, setActiveTab] = useState('campaigns');
   const [currentOrgId, setCurrentOrgId] = useState<string | null>(null);
   const [shouldCreateOrg, setShouldCreateOrg] = useState(false);
-
-  // Streamlined tab structure - now with Google Maps campaigns
-  const tabs = [
-    { 
-      id: 'campaigns', 
-      label: 'Apollo Campaigns', 
-      component: <Campaigns />,
-      icon: '📧'
-    },
-    { 
-      id: 'gmaps', 
-      label: 'Local Business', 
-      component: <GoogleMapsCampaigns />,
-      icon: '📍'
-    },
-    { 
-      id: 'organizations', 
-      label: 'Organizations', 
-      component: <Organizations showCreateForm={shouldCreateOrg} onCreateFormShown={() => setShouldCreateOrg(false)} />,
-      icon: '🏢'
-    },
-    { 
-      id: 'settings', 
-      label: 'Settings', 
-      component: <Settings />,
-      icon: '⚙️'
-    }
-  ];
+  const [productConfigOrgId, setProductConfigOrgId] = useState<string | null>(null);
 
   // Handle organization changes
   const handleOrganizationChange = (orgId: string | null) => {
@@ -55,6 +28,45 @@ function App() {
     setActiveTab('organizations');
     setShouldCreateOrg(true);
   };
+
+  // Handle open product config button click
+  const handleOpenProductConfig = (orgId: string) => {
+    setActiveTab('organizations');
+    setProductConfigOrgId(orgId);
+  };
+
+  // Streamlined tab structure - now with Google Maps campaigns
+  const tabs = [
+    {
+      id: 'campaigns',
+      label: 'Apollo Campaigns',
+      component: <Campaigns />,
+      icon: '📧'
+    },
+    {
+      id: 'gmaps',
+      label: 'Local Business',
+      component: <GoogleMapsCampaigns onOpenProductConfig={handleOpenProductConfig} />,
+      icon: '📍'
+    },
+    {
+      id: 'organizations',
+      label: 'Organizations',
+      component: <Organizations
+        showCreateForm={shouldCreateOrg}
+        onCreateFormShown={() => setShouldCreateOrg(false)}
+        productConfigOrgId={productConfigOrgId}
+        onProductConfigShown={() => setProductConfigOrgId(null)}
+      />,
+      icon: '🏢'
+    },
+    {
+      id: 'settings',
+      label: 'Settings',
+      component: <Settings />,
+      icon: '⚙️'
+    }
+  ];
 
   // Get current component to render
   const getCurrentComponent = () => {

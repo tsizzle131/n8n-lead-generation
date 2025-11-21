@@ -19,7 +19,11 @@ interface ProductConfig {
   messaging_tone?: string;
 }
 
-const GoogleMapsCampaigns: React.FC = () => {
+interface GoogleMapsCampaignsProps {
+  onOpenProductConfig?: (orgId: string) => void;
+}
+
+const GoogleMapsCampaigns: React.FC<GoogleMapsCampaignsProps> = ({ onOpenProductConfig }) => {
   // Use TanStack Query for campaigns data
   const {
     data: campaigns = [],
@@ -343,20 +347,22 @@ const GoogleMapsCampaigns: React.FC = () => {
                 </div>
               </div>
               <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-                {currentOrgId && (
-                  <a
-                    href="/organizations"
+                {currentOrgId && onOpenProductConfig && (
+                  <button
+                    onClick={() => onOpenProductConfig(currentOrgId)}
                     className="btn btn-warning"
                     style={{
                       padding: '8px 16px',
                       fontSize: '14px',
-                      textDecoration: 'none',
                       backgroundColor: '#f59e0b',
-                      color: 'white'
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '4px',
+                      cursor: 'pointer'
                     }}
                   >
                     📝 Complete Product Setup
-                  </a>
+                  </button>
                 )}
                 <div style={{
                   padding: '8px 12px',
