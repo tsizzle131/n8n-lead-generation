@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useCampaigns, type Campaign } from '../../hooks';
+import { useProducts } from '../../hooks/useProducts';
 import '../../styles/GoogleMapsCampaigns.css';
 
 interface CampaignFormData {
@@ -8,6 +9,7 @@ interface CampaignFormData {
   location: string;
   keywords: string;
   coverage_profile: 'budget' | 'balanced' | 'aggressive';
+  product_id?: string;
 }
 
 interface ProductConfig {
@@ -37,32 +39,35 @@ const GoogleMapsCampaigns: React.FC<GoogleMapsCampaignsProps> = ({ onOpenProduct
   const queryClient = useQueryClient();
 
   const [showCreateForm, setShowCreateForm] = useState(false);
+  const [currentOrgId, setCurrentOrgId] = useState<string | null>(null);
   const [formData, setFormData] = useState<CampaignFormData>({
     name: '',
     location: '',
     keywords: '',
     coverage_profile: 'balanced'
   });
+
+  // Load products for current organization
+  const { data: products = [] } = useProducts(currentOrgId);
   const [executing, setExecuting] = useState<string | null>(null);
   const [creatingCampaign, setCreatingCampaign] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [productConfig, setProductConfig] = useState<ProductConfig | null>(null);
   const [loadingProductConfig, setLoadingProductConfig] = useState(true);
-  const [currentOrgId, setCurrentOrgId] = useState<string | null>(null);
 
   // Load current organization and product config
   useEffect(() => {
     const loadProductConfig = async () => {
       try {
         // First get current organization
-        const orgResponse = await fetch('http://localhost:5001/current-organization');
+        const orgResponse = await fetch('/current-organization');
         if (orgResponse.ok) {
           const orgData = await orgResponse.json();
           setCurrentOrgId(orgData.organizationId);
 
           // Then load product config
           if (orgData.organizationId) {
-            const configResponse = await fetch(`http://localhost:5001/organizations/${orgData.organizationId}/product-config`);
+            const configResponse = await fetch(`/organizations/${orgData.organizationId}/product-config`);
             if (configResponse.ok) {
               const config = await configResponse.json();
               setProductConfig(config);
@@ -78,6 +83,16 @@ const GoogleMapsCampaigns: React.FC<GoogleMapsCampaignsProps> = ({ onOpenProduct
 
     loadProductConfig();
   }, []);
+
+  // Auto-select default product when products load
+  useEffect(() => {
+    if (products.length > 0 && !formData.product_id) {
+      const defaultProduct = products.find(p => p.is_default);
+      if (defaultProduct) {
+        setFormData(prev => ({ ...prev, product_id: defaultProduct.id }));
+      }
+    }
+  }, [products, formData.product_id]);
 
   // Calculate product config completion percentage
   const calculateConfigCompletion = (): number => {
@@ -110,14 +125,15 @@ const GoogleMapsCampaigns: React.FC<GoogleMapsCampaignsProps> = ({ onOpenProduct
       // Parse keywords (comma-separated)
       const keywordsArray = formData.keywords.split(',').map(k => k.trim()).filter(k => k);
 
-      const response = await fetch('http://localhost:5001/api/gmaps/campaigns/create', {
+      const response = await fetch('/api/gmaps/campaigns/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: formData.name,
           location: formData.location,
           keywords: keywordsArray,
-          coverage_profile: formData.coverage_profile
+          coverage_profile: formData.coverage_profile,
+          product_id: formData.product_id
         })
       });
 
@@ -154,7 +170,7 @@ const GoogleMapsCampaigns: React.FC<GoogleMapsCampaignsProps> = ({ onOpenProduct
     );
 
     try {
-      const response = await fetch(`http://localhost:5001/api/gmaps/campaigns/${campaignId}/execute`, {
+      const response = await fetch(`/api/gmaps/campaigns/${campaignId}/execute`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ max_businesses_per_zip: 50 })
@@ -180,7 +196,7 @@ const GoogleMapsCampaigns: React.FC<GoogleMapsCampaignsProps> = ({ onOpenProduct
 
   const handleExportCSV = async (campaignId: string, campaignName: string) => {
     try {
-      const response = await fetch(`http://localhost:5001/api/gmaps/campaigns/${campaignId}/export`);
+      const response = await fetch(`/api/gmaps/campaigns/${campaignId}/export`);
 
       if (!response.ok) {
         throw new Error('Failed to export campaign data');
@@ -228,7 +244,7 @@ const GoogleMapsCampaigns: React.FC<GoogleMapsCampaignsProps> = ({ onOpenProduct
       setError(null);
       const exportCampaignName = `${campaignName} - ${new Date().toISOString().split('T')[0]}`;
 
-      const response = await fetch(`http://localhost:5001/api/gmaps/campaigns/${campaignId}/export-to-instantly`, {
+      const response = await fetch(`/api/gmaps/campaigns/${campaignId}/export-to-instantly`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -452,6 +468,26 @@ const GoogleMapsCampaigns: React.FC<GoogleMapsCampaignsProps> = ({ onOpenProduct
                 <option value="aggressive">Aggressive (99% coverage)</option>
               </select>
               <small className="form-text">Higher coverage = more ZIP codes = higher cost</small>
+            </div>
+
+            <div className="form-group">
+              <label>Product/Service *</label>
+              <select
+                className="form-control"
+                value={formData.product_id || ''}
+                onChange={(e) => setFormData({...formData, product_id: e.target.value})}
+                required
+              >
+                <option value="">Select a product...</option>
+                {products.map(product => (
+                  <option key={product.id} value={product.id}>
+                    {product.name} {product.is_default ? '⭐' : ''}
+                  </option>
+                ))}
+              </select>
+              <small className="form-text">
+                Select which product/service this campaign is promoting
+              </small>
             </div>
 
             <div className="form-actions">

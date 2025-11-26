@@ -6,7 +6,7 @@ const { spawn, execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { ApifyClient } = require('apify-client');
-const { supabase, gmapsCampaigns, gmapsCoverage, gmapsBusinesses, gmapsExport, initializeSchema } = require('./supabase-db');
+const { supabase, gmapsCampaigns, gmapsCoverage, gmapsBusinesses, gmapsExport, instantlyEvents, organizations, initializeSchema } = require('./supabase-db');
 
 // Script execution state
 let currentExecution = {
@@ -974,17 +974,17 @@ app.delete('/organizations/:id', async (req, res) => {
 // Organization Context Management
 app.post('/set-organization', (req, res) => {
   const { organizationId } = req.body;
-  
+
   if (!organizationId) {
     return res.status(400).json({ error: 'Organization ID is required' });
   }
 
   appState.currentOrganization = organizationId;
   saveState();
-  
-  res.json({ 
+
+  res.json({
     message: 'Organization context set successfully',
-    organizationId 
+    organizationId
   });
 });
 
@@ -1009,7 +1009,7 @@ app.get('/current-organization', async (req, res) => {
     if (supabaseUrl && supabaseKey) {
       try {
         const cleanUrl = supabaseUrl.replace(/\/+$/, '');
-        const response = await fetch(`${cleanUrl}/rest/v1/v_organization_dashboard?id=eq.${currentOrgId}`, {
+        const response = await fetch(`${cleanUrl}/rest/v1/organizations?id=eq.${currentOrgId}`, {
           method: 'GET',
           headers: {
             'apikey': supabaseKey,
@@ -1279,7 +1279,7 @@ app.get('/organizations/:id/product-config', async (req, res) => {
   try {
     const cleanUrl = supabaseUrl.replace(/\/+$/, '');
     const response = await fetch(
-      `${cleanUrl}/rest/v1/organizations?id=eq.${id}&select=product_url,product_name,product_description,value_proposition,target_audience,industry,product_features,product_examples,messaging_tone,product_analyzed_at,custom_icebreaker_prompt`,
+      `${cleanUrl}/rest/v1/organizations?id=eq.${id}&select=company_mission,core_values,company_story,product_url_deprecated,product_name_deprecated,product_description_deprecated,value_proposition_deprecated,target_audience_deprecated,industry_deprecated,product_features_deprecated,product_examples_deprecated,messaging_tone_deprecated,product_analyzed_at_deprecated,custom_icebreaker_prompt_deprecated`,
       {
         method: 'GET',
         headers: {
@@ -1299,7 +1299,26 @@ app.get('/organizations/:id/product-config', async (req, res) => {
       return res.status(404).json({ error: 'Organization not found' });
     }
 
-    res.json(organizations[0]);
+    // Map deprecated column names to non-deprecated names for frontend compatibility
+    const org = organizations[0];
+    const config = {
+      company_mission: org.company_mission,
+      core_values: org.core_values,
+      company_story: org.company_story,
+      product_url: org.product_url_deprecated,
+      product_name: org.product_name_deprecated,
+      product_description: org.product_description_deprecated,
+      value_proposition: org.value_proposition_deprecated,
+      target_audience: org.target_audience_deprecated,
+      industry: org.industry_deprecated,
+      product_features: org.product_features_deprecated,
+      product_examples: org.product_examples_deprecated,
+      messaging_tone: org.messaging_tone_deprecated,
+      product_analyzed_at: org.product_analyzed_at_deprecated,
+      custom_icebreaker_prompt: org.custom_icebreaker_prompt_deprecated
+    };
+
+    res.json(config);
   } catch (error) {
     console.error('Error fetching product config:', error);
     res.status(500).json({ error: error.message });
@@ -1321,6 +1340,18 @@ app.put('/organizations/:id/product-config', async (req, res) => {
     // Build dynamic icebreaker prompt based on product config
     let customPrompt = null;
     if (productConfig.product_name && productConfig.value_proposition) {
+      // Build company context section
+      let companyContext = '';
+      if (productConfig.company_mission) {
+        companyContext += `- Mission: ${productConfig.company_mission}\n`;
+      }
+      if (productConfig.core_values && productConfig.core_values.length > 0) {
+        companyContext += `- Core Values: ${productConfig.core_values.join(', ')}\n`;
+      }
+      if (productConfig.company_story) {
+        companyContext += `- Our Story: ${productConfig.company_story}\n`;
+      }
+
       customPrompt = `You're writing the opening lines of a cold email for ${productConfig.product_name}.
 
 **The Person:**
@@ -1338,20 +1369,42 @@ Location: {location}
 - Value: ${productConfig.value_proposition}
 - Target: ${productConfig.target_audience || 'Businesses'}
 
+**Your Company Context:**
+${companyContext || '- Focus on delivering value\n'}
+
 **Your Job:**
 Write 2-3 sentences that:
 1. Reference ONE specific thing about their business
 2. Connect it to how ${productConfig.product_name} could help
 3. Sound human and conversational
+4. Reflect your company's mission and values in your approach
 
 **Tone:** ${productConfig.messaging_tone || 'professional'}
 
 Return format:
 {{"icebreaker": "your message"}}`;
-      
+
       productConfig.custom_icebreaker_prompt = customPrompt;
     }
-    
+
+    // Map non-deprecated names to deprecated column names for database compatibility
+    const dbConfig = {
+      company_mission: productConfig.company_mission,
+      core_values: productConfig.core_values,
+      company_story: productConfig.company_story,
+      product_url_deprecated: productConfig.product_url,
+      product_name_deprecated: productConfig.product_name,
+      product_description_deprecated: productConfig.product_description,
+      value_proposition_deprecated: productConfig.value_proposition,
+      target_audience_deprecated: productConfig.target_audience,
+      industry_deprecated: productConfig.industry,
+      product_features_deprecated: productConfig.product_features,
+      product_examples_deprecated: productConfig.product_examples,
+      messaging_tone_deprecated: productConfig.messaging_tone,
+      product_analyzed_at_deprecated: productConfig.product_analyzed_at,
+      custom_icebreaker_prompt_deprecated: productConfig.custom_icebreaker_prompt
+    };
+
     const cleanUrl = supabaseUrl.replace(/\/+$/, '');
     const response = await fetch(`${cleanUrl}/rest/v1/organizations?id=eq.${id}`, {
       method: 'PATCH',
@@ -1361,7 +1414,7 @@ Return format:
         'Content-Type': 'application/json',
         'Prefer': 'return=representation'
       },
-      body: JSON.stringify(productConfig)
+      body: JSON.stringify(dbConfig)
     });
 
     if (!response.ok) {
@@ -1515,6 +1568,508 @@ app.get('/organizations/:id/usage', async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching organization usage:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================================================
+// Products Management Endpoints
+// ============================================================================
+
+// List all products for an organization
+app.get('/organizations/:id/products', async (req, res) => {
+  const { id } = req.params;
+  const supabaseUrl = appState.supabase?.url;
+  const supabaseKey = appState.supabase?.key;
+
+  if (!supabaseUrl || !supabaseKey) {
+    return res.status(400).json({ error: 'Supabase not configured' });
+  }
+
+  try {
+    const cleanUrl = supabaseUrl.replace(/\/+$/, '');
+    const response = await fetch(
+      `${cleanUrl}/rest/v1/products?organization_id=eq.${id}&order=display_order.asc,created_at.desc`,
+      {
+        method: 'GET',
+        headers: {
+          'apikey': supabaseKey,
+          'Authorization': `Bearer ${supabaseKey}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+    }
+
+    const products = await response.json();
+    res.json({ products });
+  } catch (error) {
+    console.error('Error fetching products:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get a single product by ID
+app.get('/products/:id', async (req, res) => {
+  const { id } = req.params;
+  const supabaseUrl = appState.supabase?.url;
+  const supabaseKey = appState.supabase?.key;
+
+  if (!supabaseUrl || !supabaseKey) {
+    return res.status(400).json({ error: 'Supabase not configured' });
+  }
+
+  try {
+    const cleanUrl = supabaseUrl.replace(/\/+$/, '');
+    const response = await fetch(
+      `${cleanUrl}/rest/v1/products?id=eq.${id}`,
+      {
+        method: 'GET',
+        headers: {
+          'apikey': supabaseKey,
+          'Authorization': `Bearer ${supabaseKey}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+    }
+
+    const products = await response.json();
+    if (products.length === 0) {
+      return res.status(404).json({ error: 'Product not found' });
+    }
+
+    res.json(products[0]);
+  } catch (error) {
+    console.error('Error fetching product:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Create a new product
+app.post('/organizations/:id/products', async (req, res) => {
+  const { id } = req.params;
+  const productData = req.body;
+  const supabaseUrl = appState.supabase?.url;
+  const supabaseKey = appState.supabase?.key;
+
+  if (!supabaseUrl || !supabaseKey) {
+    return res.status(400).json({ error: 'Supabase not configured' });
+  }
+
+  // Validate required fields
+  if (!productData.name || productData.name.trim().length === 0) {
+    return res.status(400).json({ error: 'Product name is required' });
+  }
+
+  try {
+    // Generate slug from name if not provided
+    const slug = productData.slug || productData.name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '');
+
+    // Build custom icebreaker prompt if we have enough data
+    let customPrompt = null;
+    if (productData.name && productData.value_proposition) {
+      customPrompt = `You're writing the opening lines of a cold email for ${productData.name}.
+
+**The Person:**
+Name: {first_name} {last_name}
+Role: {headline}
+Company: {company_name}
+Location: {location}
+
+**What you learned about their company:**
+{website_summaries}
+
+**Your Product/Service:**
+- Name: ${productData.name}
+- Description: ${productData.description || 'Product/service'}
+- Value: ${productData.value_proposition}
+- Target: ${productData.target_audience || 'Businesses'}
+
+**Your Job:**
+Write 2-3 sentences that:
+1. Reference ONE specific thing about their business
+2. Connect it to how ${productData.name} could help
+3. Sound human and conversational
+
+**Tone:** ${productData.messaging_tone || 'professional'}
+
+Return format:
+{{"icebreaker": "your message"}}`;
+    }
+
+    const newProduct = {
+      organization_id: id,
+      name: productData.name,
+      slug: slug,
+      description: productData.description || null,
+      product_url: productData.product_url || null,
+      value_proposition: productData.value_proposition || null,
+      target_audience: productData.target_audience || null,
+      industry: productData.industry || null,
+      messaging_tone: productData.messaging_tone || 'professional',
+      product_features: productData.product_features || [],
+      product_examples: productData.product_examples || [],
+      custom_icebreaker_prompt: customPrompt,
+      target_categories: productData.target_categories || [],
+      category_matching_keywords: productData.category_matching_keywords || [],
+      is_active: productData.is_active !== undefined ? productData.is_active : true,
+      is_default: productData.is_default || false,
+      display_order: productData.display_order || 0
+    };
+
+    const cleanUrl = supabaseUrl.replace(/\/+$/, '');
+    const response = await fetch(`${cleanUrl}/rest/v1/products`, {
+      method: 'POST',
+      headers: {
+        'apikey': supabaseKey,
+        'Authorization': `Bearer ${supabaseKey}`,
+        'Content-Type': 'application/json',
+        'Prefer': 'return=representation'
+      },
+      body: JSON.stringify(newProduct)
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`HTTP ${response.status}: ${errorText}`);
+    }
+
+    const created = await response.json();
+
+    // If this is set as default, update the organization
+    if (productData.is_default && created.length > 0) {
+      await fetch(`${cleanUrl}/rest/v1/organizations?id=eq.${id}`, {
+        method: 'PATCH',
+        headers: {
+          'apikey': supabaseKey,
+          'Authorization': `Bearer ${supabaseKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ default_product_id: created[0].id })
+      });
+    }
+
+    res.status(201).json({
+      message: 'Product created successfully',
+      product: created[0]
+    });
+  } catch (error) {
+    console.error('Error creating product:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Update a product
+app.put('/products/:id', async (req, res) => {
+  const { id } = req.params;
+  const updates = req.body;
+  const supabaseUrl = appState.supabase?.url;
+  const supabaseKey = appState.supabase?.key;
+
+  if (!supabaseUrl || !supabaseKey) {
+    return res.status(400).json({ error: 'Supabase not configured' });
+  }
+
+  try {
+    // First, get the existing product to get organization_id
+    const cleanUrl = supabaseUrl.replace(/\/+$/, '');
+    const getResponse = await fetch(
+      `${cleanUrl}/rest/v1/products?id=eq.${id}`,
+      {
+        method: 'GET',
+        headers: {
+          'apikey': supabaseKey,
+          'Authorization': `Bearer ${supabaseKey}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    if (!getResponse.ok) {
+      throw new Error(`HTTP ${getResponse.status}: ${await getResponse.text()}`);
+    }
+
+    const existing = await getResponse.json();
+    if (existing.length === 0) {
+      return res.status(404).json({ error: 'Product not found' });
+    }
+
+    const existingProduct = existing[0];
+
+    // Rebuild custom icebreaker prompt if relevant fields changed
+    if (updates.name || updates.value_proposition || updates.description ||
+        updates.target_audience || updates.messaging_tone) {
+
+      const name = updates.name || existingProduct.name;
+      const valueProp = updates.value_proposition || existingProduct.value_proposition;
+      const description = updates.description || existingProduct.description;
+      const targetAudience = updates.target_audience || existingProduct.target_audience;
+      const tone = updates.messaging_tone || existingProduct.messaging_tone;
+
+      if (name && valueProp) {
+        updates.custom_icebreaker_prompt = `You're writing the opening lines of a cold email for ${name}.
+
+**The Person:**
+Name: {first_name} {last_name}
+Role: {headline}
+Company: {company_name}
+Location: {location}
+
+**What you learned about their company:**
+{website_summaries}
+
+**Your Product/Service:**
+- Name: ${name}
+- Description: ${description || 'Product/service'}
+- Value: ${valueProp}
+- Target: ${targetAudience || 'Businesses'}
+
+**Your Job:**
+Write 2-3 sentences that:
+1. Reference ONE specific thing about their business
+2. Connect it to how ${name} could help
+3. Sound human and conversational
+
+**Tone:** ${tone || 'professional'}
+
+Return format:
+{{"icebreaker": "your message"}}`;
+      }
+    }
+
+    // Update timestamp
+    updates.updated_at = new Date().toISOString();
+
+    const response = await fetch(`${cleanUrl}/rest/v1/products?id=eq.${id}`, {
+      method: 'PATCH',
+      headers: {
+        'apikey': supabaseKey,
+        'Authorization': `Bearer ${supabaseKey}`,
+        'Content-Type': 'application/json',
+        'Prefer': 'return=representation'
+      },
+      body: JSON.stringify(updates)
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+    }
+
+    const updated = await response.json();
+
+    // If is_default was set to true, update the organization
+    if (updates.is_default === true && updated.length > 0) {
+      await fetch(`${cleanUrl}/rest/v1/organizations?id=eq.${existingProduct.organization_id}`, {
+        method: 'PATCH',
+        headers: {
+          'apikey': supabaseKey,
+          'Authorization': `Bearer ${supabaseKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ default_product_id: updated[0].id })
+      });
+    }
+
+    res.json({
+      message: 'Product updated successfully',
+      product: updated[0]
+    });
+  } catch (error) {
+    console.error('Error updating product:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Delete a product
+app.delete('/products/:id', async (req, res) => {
+  const { id } = req.params;
+  const supabaseUrl = appState.supabase?.url;
+  const supabaseKey = appState.supabase?.key;
+
+  if (!supabaseUrl || !supabaseKey) {
+    return res.status(400).json({ error: 'Supabase not configured' });
+  }
+
+  try {
+    // First, get the product to check if it's the default
+    const cleanUrl = supabaseUrl.replace(/\/+$/, '');
+    const getResponse = await fetch(
+      `${cleanUrl}/rest/v1/products?id=eq.${id}`,
+      {
+        method: 'GET',
+        headers: {
+          'apikey': supabaseKey,
+          'Authorization': `Bearer ${supabaseKey}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    if (!getResponse.ok) {
+      throw new Error(`HTTP ${getResponse.status}: ${await getResponse.text()}`);
+    }
+
+    const products = await getResponse.json();
+    if (products.length === 0) {
+      return res.status(404).json({ error: 'Product not found' });
+    }
+
+    const product = products[0];
+
+    // Check if this is the default product for the organization
+    const orgResponse = await fetch(
+      `${cleanUrl}/rest/v1/organizations?id=eq.${product.organization_id}&select=default_product_id`,
+      {
+        method: 'GET',
+        headers: {
+          'apikey': supabaseKey,
+          'Authorization': `Bearer ${supabaseKey}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    if (orgResponse.ok) {
+      const orgs = await orgResponse.json();
+      if (orgs.length > 0 && orgs[0].default_product_id === id) {
+        // Clear the default product reference before deleting
+        await fetch(`${cleanUrl}/rest/v1/organizations?id=eq.${product.organization_id}`, {
+          method: 'PATCH',
+          headers: {
+            'apikey': supabaseKey,
+            'Authorization': `Bearer ${supabaseKey}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ default_product_id: null })
+        });
+
+        // Invalidate organization cache so next fetch gets fresh data
+        if (appState.organizations && appState.organizations[product.organization_id]) {
+          delete appState.organizations[product.organization_id];
+        }
+      }
+    }
+
+    // Delete the product
+    const response = await fetch(`${cleanUrl}/rest/v1/products?id=eq.${id}`, {
+      method: 'DELETE',
+      headers: {
+        'apikey': supabaseKey,
+        'Authorization': `Bearer ${supabaseKey}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+    }
+
+    res.json({ message: 'Product deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting product:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Set a product as the default for its organization
+app.put('/products/:id/set-default', async (req, res) => {
+  const { id } = req.params;
+  const supabaseUrl = appState.supabase?.url;
+  const supabaseKey = appState.supabase?.key;
+
+  if (!supabaseUrl || !supabaseKey) {
+    return res.status(400).json({ error: 'Supabase not configured' });
+  }
+
+  try {
+    const cleanUrl = supabaseUrl.replace(/\/+$/, '');
+
+    // Get the product to find its organization
+    const getResponse = await fetch(
+      `${cleanUrl}/rest/v1/products?id=eq.${id}`,
+      {
+        method: 'GET',
+        headers: {
+          'apikey': supabaseKey,
+          'Authorization': `Bearer ${supabaseKey}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    if (!getResponse.ok) {
+      throw new Error(`HTTP ${getResponse.status}: ${await getResponse.text()}`);
+    }
+
+    const products = await getResponse.json();
+    if (products.length === 0) {
+      return res.status(404).json({ error: 'Product not found' });
+    }
+
+    const product = products[0];
+    const organizationId = product.organization_id;
+
+    // Update all products in this organization to not be default
+    await fetch(`${cleanUrl}/rest/v1/products?organization_id=eq.${organizationId}`, {
+      method: 'PATCH',
+      headers: {
+        'apikey': supabaseKey,
+        'Authorization': `Bearer ${supabaseKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ is_default: false })
+    });
+
+    // Set this product as default
+    const updateResponse = await fetch(`${cleanUrl}/rest/v1/products?id=eq.${id}`, {
+      method: 'PATCH',
+      headers: {
+        'apikey': supabaseKey,
+        'Authorization': `Bearer ${supabaseKey}`,
+        'Content-Type': 'application/json',
+        'Prefer': 'return=representation'
+      },
+      body: JSON.stringify({ is_default: true })
+    });
+
+    if (!updateResponse.ok) {
+      throw new Error(`HTTP ${updateResponse.status}: ${await updateResponse.text()}`);
+    }
+
+    const updated = await updateResponse.json();
+
+    // Update the organization's default_product_id
+    await fetch(`${cleanUrl}/rest/v1/organizations?id=eq.${organizationId}`, {
+      method: 'PATCH',
+      headers: {
+        'apikey': supabaseKey,
+        'Authorization': `Bearer ${supabaseKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ default_product_id: id })
+    });
+
+    // Invalidate organization cache so next fetch gets fresh data
+    if (appState.organizations && appState.organizations[organizationId]) {
+      delete appState.organizations[organizationId];
+    }
+
+    res.json({
+      message: 'Product set as default successfully',
+      product: updated[0]
+    });
+  } catch (error) {
+    console.error('Error setting default product:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -2696,13 +3251,13 @@ app.get('/api/gmaps/campaigns', async (req, res) => {
 });
 
 app.post('/api/gmaps/campaigns/create', async (req, res) => {
-  const { name, location, keywords, coverage_profile = 'balanced', description } = req.body;
-  
-  console.log('📍 Creating Google Maps campaign:', { name, location, keywords });
-  
+  const { name, location, keywords, coverage_profile = 'balanced', description, product_id } = req.body;
+
+  console.log('📍 Creating Google Maps campaign:', { name, location, keywords, product_id });
+
   if (!name || !location || !keywords) {
-    return res.status(400).json({ 
-      error: 'Name, location, and keywords are required' 
+    return res.status(400).json({
+      error: 'Name, location, and keywords are required'
     });
   }
   
@@ -2808,6 +3363,23 @@ app.post('/api/gmaps/campaigns/create', async (req, res) => {
     });
   }
 
+  // Handle product_id - use provided or get default
+  let finalProductId = product_id;
+  if (!finalProductId) {
+    try {
+      const { products } = require('./supabase-db');
+      const defaultProduct = await products.getDefaultForOrg(appState.currentOrganization);
+      if (defaultProduct) {
+        finalProductId = defaultProduct.id;
+        console.log(`📦 Using default product: ${defaultProduct.name}`);
+      } else {
+        console.warn('⚠️  No default product found for organization');
+      }
+    } catch (error) {
+      console.warn('Could not fetch default product:', error.message);
+    }
+  }
+
   const campaignData = {
     name,
     location,
@@ -2816,6 +3388,7 @@ app.post('/api/gmaps/campaigns/create', async (req, res) => {
     description,
     status: 'draft',
     organization_id: appState.currentOrganization,  // FIX: Add organization_id
+    product_id: finalProductId,  // NEW: Add product_id
     target_zip_count: zipAnalysis?.zip_codes?.length || (coverage_profile === 'budget' ? 5 : coverage_profile === 'balanced' ? 10 : 20),
     estimated_cost: zipAnalysis?.cost_estimates?.total_cost || (coverage_profile === 'budget' ? 25 : coverage_profile === 'balanced' ? 50 : 100),
     total_businesses_found: 0,
@@ -3990,6 +4563,496 @@ app.post('/api/gmaps/campaigns/:campaignId/export-to-instantly', async (req, res
   }
 });
 
+// ============================================================================
+// MASTER LEADS API (Internal Team Only)
+// ============================================================================
+// Aggregates all businesses across all organizations into deduplicated view
+
+const { masterLeads } = require('./supabase-db');
+
+// GET /api/master-leads - List leads with filters (including demographics)
+app.get('/api/master-leads', async (req, res) => {
+  try {
+    const filters = {
+      // Core filters
+      category: req.query.category,
+      city: req.query.city,
+      state: req.query.state,
+      postalCode: req.query.postal_code,
+      hasEmail: req.query.has_email === 'true',
+      verified: req.query.verified === 'true',
+      // Demographic filters (requires enhanced master_leads view)
+      minIncome: req.query.min_income ? parseInt(req.query.min_income) : null,
+      minMarketScore: req.query.min_market_score ? parseFloat(req.query.min_market_score) : null,
+      qualityTier: req.query.quality_tier,  // A, B, C, D
+      leadPriority: req.query.lead_priority  // Hot, Warm, Standard, Cold
+    };
+    const options = {
+      page: parseInt(req.query.page) || 0,
+      pageSize: parseInt(req.query.page_size) || 100
+    };
+    const result = await masterLeads.getAll(filters, options);
+    res.json(result);
+  } catch (error) {
+    console.error('Error fetching master leads:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/master-leads/stats - Statistics dashboard
+app.get('/api/master-leads/stats', async (req, res) => {
+  try {
+    const stats = await masterLeads.getStats();
+    res.json(stats);
+  } catch (error) {
+    console.error('Error fetching stats:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/master-leads/refresh - Trigger view refresh
+app.post('/api/master-leads/refresh', async (req, res) => {
+  try {
+    await masterLeads.refresh();
+    res.json({ success: true, message: 'Master leads view refreshed' });
+  } catch (error) {
+    console.error('Error refreshing:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/master-leads/search - Search by name
+app.get('/api/master-leads/search', async (req, res) => {
+  try {
+    const query = req.query.q;
+    if (!query) return res.status(400).json({ error: 'Query parameter q is required' });
+    const results = await masterLeads.search(query);
+    res.json(results);
+  } catch (error) {
+    console.error('Error searching:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/master-leads/export - Export for monthly reports
+app.get('/api/master-leads/export', async (req, res) => {
+  try {
+    const filters = {
+      category: req.query.category,
+      state: req.query.state,
+      hasEmail: req.query.has_email === 'true'
+    };
+    const data = await masterLeads.exportAll(filters);
+    res.json({ data, total: data.length });
+  } catch (error) {
+    console.error('Error exporting:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================================================
+// ZIP Demographics Endpoints
+// ============================================================================
+const { zipDemographics } = require('./supabase-db');
+
+// NOTE: Specific routes must come BEFORE the :zipCode catch-all route
+
+// GET /api/demographics/search - Search demographics with filters
+app.get('/api/demographics/search', async (req, res) => {
+  try {
+    const filters = {
+      state: req.query.state,
+      city: req.query.city,
+      minIncome: req.query.min_income ? parseInt(req.query.min_income) : null,
+      maxIncome: req.query.max_income ? parseInt(req.query.max_income) : null,
+      minScore: req.query.min_score ? parseFloat(req.query.min_score) : null,
+      tier: req.query.tier,
+      minPopulation: req.query.min_population ? parseInt(req.query.min_population) : null
+    };
+    const options = {
+      page: parseInt(req.query.page) || 0,
+      pageSize: Math.min(parseInt(req.query.page_size) || 50, 250)
+    };
+    const result = await zipDemographics.search(filters, options);
+    res.json(result);
+  } catch (error) {
+    console.error('Error searching demographics:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/demographics/opportunities - Get top market opportunities
+app.get('/api/demographics/opportunities', async (req, res) => {
+  try {
+    const state = req.query.state || null;
+    const limit = Math.min(parseInt(req.query.limit) || 50, 250);
+    const data = await zipDemographics.getTopOpportunities(state, limit);
+    res.json({ data, total: data.length });
+  } catch (error) {
+    console.error('Error fetching opportunities:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/demographics/stats - Get overall demographics statistics
+app.get('/api/demographics/stats', async (req, res) => {
+  try {
+    const stats = await zipDemographics.getStats();
+    res.json(stats);
+  } catch (error) {
+    console.error('Error fetching demographics stats:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/demographics/states - Get state-level summary
+app.get('/api/demographics/states', async (req, res) => {
+  try {
+    const data = await zipDemographics.getStateSummary();
+    res.json({ data, total: data.length });
+  } catch (error) {
+    console.error('Error fetching state summary:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/demographics/tier/:tier - Get ZIP codes by quality tier
+app.get('/api/demographics/tier/:tier', async (req, res) => {
+  try {
+    const { tier } = req.params;
+    if (!['A', 'B', 'C', 'D'].includes(tier.toUpperCase())) {
+      return res.status(400).json({ error: 'Invalid tier. Must be A, B, C, or D.' });
+    }
+    const state = req.query.state || null;
+    const limit = Math.min(parseInt(req.query.limit) || 100, 500);
+    const data = await zipDemographics.getByTier(tier.toUpperCase(), state, limit);
+    res.json({ data, total: data.length });
+  } catch (error) {
+    console.error('Error fetching tier data:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/demographics/sync - Sync business metrics from master_leads
+app.post('/api/demographics/sync', async (req, res) => {
+  try {
+    await zipDemographics.syncBusinessMetrics();
+    res.json({ success: true, message: 'Business metrics synced and scores recalculated' });
+  } catch (error) {
+    console.error('Error syncing business metrics:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/demographics/calculate-scores - Recalculate market scores
+app.post('/api/demographics/calculate-scores', async (req, res) => {
+  try {
+    await zipDemographics.calculateScores();
+    res.json({ success: true, message: 'Market opportunity scores recalculated' });
+  } catch (error) {
+    console.error('Error calculating scores:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/demographics/bulk - Get demographics for multiple ZIP codes
+app.post('/api/demographics/bulk', async (req, res) => {
+  try {
+    const { zip_codes } = req.body;
+    if (!Array.isArray(zip_codes) || zip_codes.length === 0) {
+      return res.status(400).json({ error: 'zip_codes array is required' });
+    }
+    if (zip_codes.length > 500) {
+      return res.status(400).json({ error: 'Maximum 500 ZIP codes per request' });
+    }
+    const data = await zipDemographics.getMultiple(zip_codes);
+    res.json({ data, total: data.length, requested: zip_codes.length });
+  } catch (error) {
+    console.error('Error fetching bulk demographics:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/demographics/:zipCode - Get demographics for a single ZIP code
+// NOTE: This MUST be last since :zipCode is a catch-all parameter
+app.get('/api/demographics/:zipCode', async (req, res) => {
+  try {
+    const { zipCode } = req.params;
+    if (!zipCode || !/^\d{5}$/.test(zipCode)) {
+      return res.status(400).json({ error: 'Invalid ZIP code format. Must be 5 digits.' });
+    }
+    const data = await zipDemographics.getByZip(zipCode);
+    if (!data) {
+      return res.status(404).json({ error: `ZIP code ${zipCode} not found` });
+    }
+    res.json(data);
+  } catch (error) {
+    console.error('Error fetching ZIP demographics:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// =============================================================================
+// INSTANTLY WEBHOOK ENDPOINTS
+// =============================================================================
+
+const crypto = require('crypto');
+
+// POST /api/webhooks/instantly/:orgId - Receive Instantly webhook events
+// This is the main webhook endpoint that Instantly will call for each event
+app.post('/api/webhooks/instantly/:orgId', async (req, res) => {
+  const { orgId } = req.params;
+  const event = req.body;
+
+  console.log(`📨 Instantly webhook received for org ${orgId}:`, event.event_type || 'unknown');
+
+  try {
+    // Validate organization exists
+    const org = await organizations.getById(orgId);
+    if (!org) {
+      console.error(`❌ Webhook received for unknown organization: ${orgId}`);
+      return res.status(404).json({ error: 'Organization not found' });
+    }
+
+    // Map Instantly event types to our event types
+    const eventTypeMap = {
+      'email_opened': 'email_opened',
+      'reply_received': 'reply_received',
+      'link_clicked': 'link_clicked',
+      'email_bounced': 'email_bounced',
+      'lead_unsubscribed': 'lead_unsubscribed',
+      // Alternative event names from Instantly
+      'opened': 'email_opened',
+      'replied': 'reply_received',
+      'clicked': 'link_clicked',
+      'bounced': 'email_bounced',
+      'unsubscribed': 'lead_unsubscribed'
+    };
+
+    const eventType = eventTypeMap[event.event_type] || event.event_type;
+    if (!eventType) {
+      console.warn(`⚠️ Unknown event type: ${event.event_type}`);
+      return res.status(400).json({ error: 'Unknown event type' });
+    }
+
+    // Extract lead email from various payload formats
+    const leadEmail = event.lead_email || event.email || event.to_email || event.recipient;
+    if (!leadEmail) {
+      console.warn(`⚠️ No lead email in event payload`);
+      return res.status(400).json({ error: 'Missing lead email' });
+    }
+
+    // Create event hash for deduplication
+    const timestamp = event.timestamp || event.event_timestamp || new Date().toISOString();
+    const hashInput = `${orgId}|${eventType}|${timestamp}|${leadEmail}`;
+    const eventHash = crypto.createHash('md5').update(hashInput).digest('hex');
+
+    // Prepare event data
+    const eventData = {
+      organization_id: orgId,
+      event_type: eventType,
+      event_timestamp: timestamp,
+      instantly_workspace_id: event.workspace_id || event.workspace,
+      instantly_campaign_id: event.campaign_id || event.campaign,
+      instantly_campaign_name: event.campaign_name,
+      lead_email: leadEmail,
+      email_account: event.from_email || event.sender || event.email_account,
+      unibox_url: event.unibox_url || event.reply_url,
+      raw_payload: event,
+      event_hash: eventHash
+    };
+
+    // Store the event and update business engagement
+    const result = await instantlyEvents.create(eventData);
+
+    if (result.error) {
+      // Check if it's a duplicate (unique constraint on event_hash)
+      if (result.error.code === '23505') {
+        console.log(`⏭️ Duplicate event ignored: ${eventHash}`);
+        return res.status(200).json({ status: 'duplicate', message: 'Event already processed' });
+      }
+      throw new Error(result.error.message || 'Failed to store event');
+    }
+
+    console.log(`✅ Event stored: ${eventType} for ${leadEmail} (business: ${result.business_id || 'not matched'})`);
+
+    res.status(200).json({
+      status: 'success',
+      event_id: result.id,
+      business_matched: !!result.business_id
+    });
+
+  } catch (error) {
+    console.error('❌ Webhook error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/webhooks/instantly/:orgId/test - Test webhook connectivity
+app.get('/api/webhooks/instantly/:orgId/test', async (req, res) => {
+  const { orgId } = req.params;
+
+  try {
+    const org = await organizations.getById(orgId);
+    if (!org) {
+      return res.status(404).json({
+        status: 'error',
+        message: 'Organization not found'
+      });
+    }
+
+    res.json({
+      status: 'ok',
+      organization: org.name,
+      webhook_url: `${req.protocol}://${req.get('host')}/api/webhooks/instantly/${orgId}`,
+      message: 'Webhook endpoint is ready to receive events'
+    });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+});
+
+// GET /api/organizations/:orgId/webhook-url - Get webhook URL for settings UI
+app.get('/api/organizations/:orgId/webhook-url', async (req, res) => {
+  const { orgId } = req.params;
+
+  try {
+    const org = await organizations.getById(orgId);
+    if (!org) {
+      return res.status(404).json({ error: 'Organization not found' });
+    }
+
+    // Construct webhook URL (use environment variable for production)
+    const baseUrl = process.env.WEBHOOK_BASE_URL || `http://localhost:${port}`;
+    const webhookUrl = `${baseUrl}/api/webhooks/instantly/${orgId}`;
+
+    res.json({
+      organization_id: orgId,
+      organization_name: org.name,
+      webhook_url: webhookUrl,
+      instructions: 'Copy this URL to your Instantly workspace webhook settings'
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/instantly/events/recent - Get recent events (optionally by org)
+app.get('/api/instantly/events/recent', async (req, res) => {
+  try {
+    const { orgId, limit = 50 } = req.query;
+    const events = await instantlyEvents.getRecent(orgId || null, parseInt(limit));
+    res.json({ data: events, total: events.length });
+  } catch (error) {
+    console.error('Error fetching recent events:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/instantly/events/by-email/:email - Get events for a specific lead
+app.get('/api/instantly/events/by-email/:email', async (req, res) => {
+  try {
+    const { email } = req.params;
+    const { orgId } = req.query;
+    const events = await instantlyEvents.getByEmail(email, orgId || null);
+    res.json({ data: events, total: events.length, email });
+  } catch (error) {
+    console.error('Error fetching events by email:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/instantly/campaigns/:campaignId/stats - Get engagement stats for a campaign
+app.get('/api/instantly/campaigns/:campaignId/stats', async (req, res) => {
+  try {
+    const { campaignId } = req.params;
+    const stats = await instantlyEvents.getCampaignStats(campaignId);
+    res.json(stats);
+  } catch (error) {
+    console.error('Error fetching campaign stats:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/organizations/:orgId/engagement-summary - Get org-wide engagement summary
+app.get('/api/organizations/:orgId/engagement-summary', async (req, res) => {
+  try {
+    const { orgId } = req.params;
+
+    const org = await organizations.getById(orgId);
+    if (!org) {
+      return res.status(404).json({ error: 'Organization not found' });
+    }
+
+    const summary = await instantlyEvents.getOrgEngagementSummary(orgId);
+    res.json({
+      organization_id: orgId,
+      organization_name: org.name,
+      ...summary
+    });
+  } catch (error) {
+    console.error('Error fetching engagement summary:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/organizations - List all organizations
+app.get('/api/organizations', async (req, res) => {
+  try {
+    const orgs = await organizations.getAll();
+    res.json({ data: orgs, total: orgs.length });
+  } catch (error) {
+    console.error('Error fetching organizations:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/organizations/:orgId - Get a single organization
+app.get('/api/organizations/:orgId', async (req, res) => {
+  try {
+    const { orgId } = req.params;
+    const org = await organizations.getById(orgId);
+    if (!org) {
+      return res.status(404).json({ error: 'Organization not found' });
+    }
+    res.json(org);
+  } catch (error) {
+    console.error('Error fetching organization:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// =============================================================================
+// SERVE REACT FRONTEND (Production)
+// =============================================================================
+
+// Serve static files from React build
+const frontendBuildPath = path.join(__dirname, 'frontend', 'build');
+if (fs.existsSync(frontendBuildPath)) {
+  console.log('📦 Serving React frontend from:', frontendBuildPath);
+  app.use(express.static(frontendBuildPath));
+
+  // Handle React routing - serve index.html for any non-API routes
+  app.get('*', (req, res, next) => {
+    // Skip API routes
+    if (req.path.startsWith('/api') || req.path.startsWith('/api-keys') ||
+        req.path.startsWith('/settings') || req.path.startsWith('/prompts') ||
+        req.path.startsWith('/supabase') || req.path.startsWith('/organizations') ||
+        req.path.startsWith('/campaigns') || req.path.startsWith('/audiences') ||
+        req.path.startsWith('/products') || req.path.startsWith('/run-script') ||
+        req.path.startsWith('/script-') || req.path.startsWith('/test-') ||
+        req.path.startsWith('/generate-') || req.path.startsWith('/sample-') ||
+        req.path.startsWith('/export-') || req.path.startsWith('/execution-') ||
+        req.path.startsWith('/stop-') || req.path.startsWith('/current-') ||
+        req.path.startsWith('/set-')) {
+      return next();
+    }
+    res.sendFile(path.join(frontendBuildPath, 'index.html'));
+  });
+} else {
+  console.log('ℹ️  No frontend build found. Run "npm run build" to create it.');
+}
+
 app.listen(port, async () => {
   console.log(`Lead Generation API Server running at http://localhost:${port}`);
   console.log('Python executable:', pythonCmd);
@@ -4028,6 +5091,12 @@ app.listen(port, async () => {
   console.log('- GET  /organizations/:id/settings');
   console.log('- POST /organizations/:id/settings');
   console.log('- GET  /organizations/:id/usage');
+  console.log('- GET  /organizations/:id/products');
+  console.log('- POST /organizations/:id/products');
+  console.log('- GET  /products/:id');
+  console.log('- PUT  /products/:id');
+  console.log('- DELETE /products/:id');
+  console.log('- PUT  /products/:id/set-default');
   console.log('- GET  /audiences');
   console.log('- POST /audiences');
   console.log('- PUT  /audiences/:id');
@@ -4048,4 +5117,18 @@ app.listen(port, async () => {
   console.log('- POST /stop-script');
   console.log('- GET  /script-logs');
   console.log('- GET  /execution-history');
+  console.log('- GET  /api/master-leads');
+  console.log('- GET  /api/master-leads/stats');
+  console.log('- POST /api/master-leads/refresh');
+  console.log('- GET  /api/master-leads/search');
+  console.log('- GET  /api/master-leads/export');
+  console.log('- GET  /api/demographics/:zipCode');
+  console.log('- GET  /api/demographics/search');
+  console.log('- GET  /api/demographics/opportunities');
+  console.log('- GET  /api/demographics/stats');
+  console.log('- GET  /api/demographics/states');
+  console.log('- GET  /api/demographics/tier/:tier');
+  console.log('- POST /api/demographics/sync');
+  console.log('- POST /api/demographics/calculate-scores');
+  console.log('- POST /api/demographics/bulk');
 });

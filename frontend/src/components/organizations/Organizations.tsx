@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import apiService from '../../services/api';
 import ProductConfiguration from '../settings/ProductConfiguration';
+import { ProductsList } from '../products/ProductsList';
 
 interface Organization {
   id: string;
@@ -45,7 +46,9 @@ const Organizations: React.FC<OrganizationsProps> = ({
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [showProductConfig, setShowProductConfig] = useState(false);
   const [productConfigOrgId, setProductConfigOrgId] = useState<string | null>(null);
-  
+  const [showProductsModal, setShowProductsModal] = useState(false);
+  const [productsOrgId, setProductsOrgId] = useState<string | null>(null);
+
   // Form states
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [newOrg, setNewOrg] = useState({
@@ -340,6 +343,16 @@ const Organizations: React.FC<OrganizationsProps> = ({
                     Product
                   </button>
                   <button
+                    onClick={() => {
+                      setProductsOrgId(org.id);
+                      setShowProductsModal(true);
+                    }}
+                    className="btn btn-success btn-small"
+                    disabled={loading}
+                  >
+                    📦 Products
+                  </button>
+                  <button
                     onClick={() => setSelectedOrg(org)}
                     className="btn btn-secondary btn-small"
                     disabled={loading}
@@ -583,6 +596,29 @@ const Organizations: React.FC<OrganizationsProps> = ({
                   setProductConfigOrgId(null);
                 }}
               />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Products Management Modal */}
+      {showProductsModal && productsOrgId && (
+        <div className="modal-overlay">
+          <div className="modal large">
+            <div className="modal-header-row">
+              <h3>Manage Products</h3>
+              <button
+                onClick={() => {
+                  setShowProductsModal(false);
+                  setProductsOrgId(null);
+                }}
+                className="close-btn"
+              >
+                ×
+              </button>
+            </div>
+            <div className="modal-body">
+              <ProductsList organizationId={productsOrgId} />
             </div>
           </div>
         </div>

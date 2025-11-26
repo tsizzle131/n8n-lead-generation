@@ -2,6 +2,9 @@ import React, { useState, useEffect } from 'react';
 import '../../styles/ProductConfiguration.css';
 
 interface ProductConfig {
+  company_mission?: string;
+  core_values?: string[];
+  company_story?: string;
   product_url?: string;
   product_name?: string;
   product_description?: string;
@@ -32,6 +35,7 @@ const ProductConfiguration: React.FC<ProductConfigurationProps> = ({
   const [loading, setLoading] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [coreValues, setCoreValues] = useState<string[]>([]);
   const [features, setFeatures] = useState<string[]>([]);
   const [examples, setExamples] = useState<string[]>([]);
 
@@ -42,11 +46,12 @@ const ProductConfiguration: React.FC<ProductConfigurationProps> = ({
   const loadProductConfig = async () => {
     try {
       setLoading(true);
-      const response = await fetch(`http://localhost:5001/organizations/${organizationId}/product-config`);
+      const response = await fetch(`/organizations/${organizationId}/product-config`);
       if (response.ok) {
         const data = await response.json();
         setProductConfig(data);
         setProductUrl(data.product_url || '');
+        setCoreValues(data.core_values || []);
         setFeatures(data.product_features || []);
         setExamples(data.product_examples || []);
       }
@@ -65,7 +70,7 @@ const ProductConfiguration: React.FC<ProductConfigurationProps> = ({
 
     setAnalyzing(true);
     try {
-      const response = await fetch('http://localhost:8000/analyze-product-url', {
+      const response = await fetch('/analyze-product-url', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url: productUrl })
@@ -98,11 +103,12 @@ const ProductConfiguration: React.FC<ProductConfigurationProps> = ({
       const configToSave = {
         ...productConfig,
         product_url: productUrl,
+        core_values: coreValues.filter(v => v.trim()),
         product_features: features,
         product_examples: examples
       };
 
-      const response = await fetch(`http://localhost:5001/organizations/${organizationId}/product-config`, {
+      const response = await fetch(`/organizations/${organizationId}/product-config`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(configToSave)
@@ -154,6 +160,20 @@ const ProductConfiguration: React.FC<ProductConfigurationProps> = ({
     setExamples(examples.filter((_, i) => i !== index));
   };
 
+  const addValue = () => {
+    setCoreValues([...coreValues, '']);
+  };
+
+  const updateValue = (index: number, value: string) => {
+    const updated = [...coreValues];
+    updated[index] = value;
+    setCoreValues(updated);
+  };
+
+  const removeValue = (index: number) => {
+    setCoreValues(coreValues.filter((_, i) => i !== index));
+  };
+
   const industries = [
     { value: 'beauty', label: 'Beauty & Cosmetics' },
     { value: 'technology', label: 'Technology & Software' },
@@ -179,18 +199,28 @@ const ProductConfiguration: React.FC<ProductConfigurationProps> = ({
   // Calculate completion percentage
   const calculateCompletion = (): number => {
     const requiredFields = [
+      'company_mission',
       'product_name',
       'product_description',
       'value_proposition',
       'target_audience'
     ];
 
-    const filledFields = requiredFields.filter(field =>
+    let filledCount = 0;
+
+    // Check text fields
+    const textFields = requiredFields.filter(f => f !== 'core_values');
+    filledCount += textFields.filter(field =>
       productConfig[field as keyof ProductConfig] &&
       String(productConfig[field as keyof ProductConfig]).trim().length > 0
-    );
+    ).length;
 
-    return Math.round((filledFields.length / requiredFields.length) * 100);
+    // Check core values (need at least 2)
+    if (coreValues.filter(v => v.trim()).length >= 2) {
+      filledCount += 1;
+    }
+
+    return Math.round((filledCount / (requiredFields.length + 1)) * 100);
   };
 
   const completion = calculateCompletion();
@@ -240,7 +270,7 @@ const ProductConfiguration: React.FC<ProductConfigurationProps> = ({
             </span>
           ) : (
             <span>
-              Fill in all <strong style={{ color: '#111827' }}>4 required fields</strong> marked with * to generate personalized, high-converting emails.
+              Fill in all <strong style={{ color: '#111827' }}>6 required fields</strong> marked with * to generate personalized, high-converting emails.
             </span>
           )}
         </div>
@@ -283,9 +313,80 @@ const ProductConfiguration: React.FC<ProductConfigurationProps> = ({
         )}
       </div>
 
+      {/* About Your Company Section */}
+      <div className="config-form company-context-section">
+        <h3>🏢 About Your Company</h3>
+        <p style={{ color: '#6b7280', marginBottom: '20px' }}>
+          Tell us about your company to create more authentic, values-aligned messaging
+        </p>
+
+        <div className="form-section">
+          <div className="form-group">
+            <label>Company Mission * <span style={{color: '#10b981', fontWeight: 'normal'}}>{productConfig.company_mission && '✓'}</span></label>
+            <textarea
+              value={productConfig.company_mission || ''}
+              onChange={(e) => setProductConfig({ ...productConfig, company_mission: e.target.value })}
+              placeholder="e.g., We help local restaurants increase online orders through AI-powered marketing"
+              className="form-control"
+              rows={2}
+            />
+            <small style={{color: '#6b7280'}}>
+              💡 What does your company do? Why do you exist? (100-300 chars recommended)
+            </small>
+          </div>
+
+          <div className="form-group">
+            <label>Core Values * <span style={{color: '#10b981', fontWeight: 'normal'}}>{coreValues.filter(v => v.trim()).length >= 2 && '✓'}</span></label>
+            <div style={{ marginBottom: '8px' }}>
+              {coreValues.map((value, index) => (
+                <div key={index} style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
+                  <input
+                    type="text"
+                    value={value}
+                    onChange={(e) => updateValue(index, e.target.value)}
+                    placeholder="e.g., Quality, Innovation, Customer-first"
+                    className="form-control"
+                    style={{ flex: 1 }}
+                  />
+                  <button
+                    onClick={() => removeValue(index)}
+                    className="btn btn-danger btn-small"
+                    type="button"
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+              {coreValues.length < 5 && (
+                <button onClick={addValue} className="btn btn-secondary btn-small" type="button">
+                  + Add Value
+                </button>
+              )}
+            </div>
+            <small style={{color: '#6b7280'}}>
+              💡 Add 2-5 core values/principles (e.g., Quality, Transparency, Innovation, Sustainability)
+            </small>
+          </div>
+
+          <div className="form-group">
+            <label>Company Story (Optional)</label>
+            <textarea
+              value={productConfig.company_story || ''}
+              onChange={(e) => setProductConfig({ ...productConfig, company_story: e.target.value })}
+              placeholder="Your origin story or what drives you..."
+              className="form-control"
+              rows={3}
+            />
+            <small style={{color: '#6b7280'}}>
+              💡 Share your journey, what inspired you to start, or what makes your company unique
+            </small>
+          </div>
+        </div>
+      </div>
+
       <div className="config-form">
         <h3>Step 2: Review & Customize</h3>
-        
+
         <div className="form-section">
           <div className="form-group">
             <label>Product Name * <span style={{color: '#10b981', fontWeight: 'normal'}}>{productConfig.product_name && '✓'}</span></label>

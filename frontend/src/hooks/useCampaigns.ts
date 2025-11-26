@@ -29,7 +29,7 @@ export function useCampaigns() {
   return useQuery({
     queryKey: ['campaigns'],
     queryFn: async (): Promise<Campaign[]> => {
-      const response = await fetch('http://localhost:5001/api/gmaps/campaigns');
+      const response = await fetch('/api/gmaps/campaigns');
       if (!response.ok) {
         throw new Error('Failed to fetch campaigns');
       }

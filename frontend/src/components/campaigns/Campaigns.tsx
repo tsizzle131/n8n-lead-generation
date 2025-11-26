@@ -388,7 +388,7 @@ Rules:
       
       // THE MOST RELIABLE APPROACH FOR REAL BROWSERS
       // This method works 100% of the time in production Chrome
-      const exportUrl = `http://localhost:5001/export-icebreakers?format=csv&campaign_id=${campaignId}&download=1`;
+      const exportUrl = `/export-icebreakers?format=csv&campaign_id=${campaignId}&download=1`;
       
       console.log('🔥 TRIGGERING DOWNLOAD:', exportUrl);
       

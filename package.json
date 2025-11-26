@@ -3,9 +3,14 @@
   "version": "1.0.0",
   "description": "Simple Express server for Lead Generation UI",
   "main": "simple-server.js",
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "scripts": {
     "start": "node simple-server.js",
-    "dev": "nodemon simple-server.js"
+    "dev": "nodemon simple-server.js",
+    "build": "cd frontend && npm install && npm run build",
+    "postinstall": "cd frontend && npm install && npm run build"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.57.4",

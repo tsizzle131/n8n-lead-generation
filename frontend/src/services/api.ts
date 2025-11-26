@@ -1,8 +1,13 @@
 import axios from 'axios';
 
-// For local development, we'll use the FastAPI backend on port 8000
-// You can alternatively create a simple Express.js backend if preferred
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+// API Base URL configuration:
+// - In production (Railway): Use same origin (empty string)
+// - In development: Use Express backend on port 5001
+const isProduction = process.env.NODE_ENV === 'production';
+const API_BASE_URL = process.env.REACT_APP_API_URL || (isProduction ? '' : 'http://localhost:5001');
+
+// Export for other components to use
+export const getApiBaseUrl = () => API_BASE_URL;
 
 const api = axios.create({
   baseURL: API_BASE_URL,
@@ -161,6 +166,46 @@ export interface CreateCampaignRequest {
 export interface AddUrlToCampaignRequest {
   url: string;
   notes?: string;
+}
+
+export interface Product {
+  id: string;
+  organization_id: string;
+  name: string;
+  slug?: string;
+  description?: string;
+  product_url?: string;
+  value_proposition?: string;
+  target_audience?: string;
+  industry?: string;
+  messaging_tone?: string;
+  product_features?: string[] | null;
+  product_examples?: string[] | null;
+  custom_icebreaker_prompt?: string;
+  target_categories?: string[] | null;
+  category_matching_keywords?: string[] | null;
+  is_active: boolean;
+  is_default: boolean;
+  display_order: number;
+  product_analyzed_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateProductRequest {
+  name: string;
+  slug?: string;
+  description?: string;
+  product_url?: string;
+  value_proposition?: string;
+  target_audience?: string;
+  industry?: string;
+  messaging_tone?: string;
+  product_features?: string[];
+  product_examples?: string[];
+  custom_icebreaker_prompt?: string;
+  target_categories?: string[];
+  category_matching_keywords?: string[];
 }
 
 
@@ -354,11 +399,41 @@ export const apiService = {
     const params = new URLSearchParams();
     if (month) params.append('month', month);
     if (year) params.append('year', year);
-    
+
     const response = await api.get(`/organizations/${orgId}/usage?${params.toString()}`);
     return response.data;
   },
 
+  // Product Management (Express backend on port 5001)
+  async getProducts(orgId: string): Promise<{ products: Product[] }> {
+    const response = await api.get(`/organizations/${orgId}/products`);
+    return response.data;
+  },
+
+  async getProduct(orgId: string, productId: string): Promise<{ product: Product }> {
+    const response = await api.get(`/organizations/${orgId}/products/${productId}`);
+    return response.data;
+  },
+
+  async createProduct(orgId: string, productData: CreateProductRequest): Promise<{ product: Product }> {
+    const response = await api.post(`/organizations/${orgId}/products`, productData);
+    return response.data;
+  },
+
+  async updateProduct(orgId: string, productId: string, updates: Partial<CreateProductRequest>): Promise<{ product: Product }> {
+    const response = await api.put(`/organizations/${orgId}/products/${productId}`, updates);
+    return response.data;
+  },
+
+  async deleteProduct(orgId: string, productId: string): Promise<{ success: boolean; message: string }> {
+    const response = await api.delete(`/organizations/${orgId}/products/${productId}`);
+    return response.data;
+  },
+
+  async setDefaultProduct(orgId: string, productId: string): Promise<{ product: Product }> {
+    const response = await api.post(`/organizations/${orgId}/products/${productId}/set-default`);
+    return response.data;
+  },
 
   // Audience Management
   async getAudiences(): Promise<{ audiences: any[] }> {
