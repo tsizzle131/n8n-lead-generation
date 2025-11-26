@@ -127,6 +127,18 @@ function loadState() {
   } catch (err) {
     console.log('Could not load saved state:', err.message);
   }
+
+  // Always check environment variables for Supabase (takes precedence for production)
+  if (process.env.SUPABASE_URL) {
+    if (!appState.supabase) appState.supabase = {};
+    appState.supabase.url = process.env.SUPABASE_URL;
+    console.log('Using SUPABASE_URL from environment');
+  }
+  if (process.env.SUPABASE_KEY) {
+    if (!appState.supabase) appState.supabase = {};
+    appState.supabase.key = process.env.SUPABASE_KEY;
+    console.log('Using SUPABASE_KEY from environment');
+  }
 }
 
 // Save state to file (with real API keys, not masked ones)
