@@ -4815,6 +4815,14 @@ app.get('/api/demographics/:zipCode', async (req, res) => {
 
 const crypto = require('crypto');
 
+// GET /api/webhooks/instantly/:orgId - Webhook URL validation endpoint
+// Instantly sends a GET request to validate the URL before saving
+app.get('/api/webhooks/instantly/:orgId', async (req, res) => {
+  const { orgId } = req.params;
+  console.log(`🔍 Instantly webhook validation for org ${orgId}`);
+  res.status(200).json({ status: 'ok', message: 'Webhook endpoint ready', orgId });
+});
+
 // POST /api/webhooks/instantly/:orgId - Receive Instantly webhook events
 // This is the main webhook endpoint that Instantly will call for each event
 app.post('/api/webhooks/instantly/:orgId', async (req, res) => {
