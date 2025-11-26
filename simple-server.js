@@ -154,7 +154,12 @@ function saveState() {
 loadState();
 
 // API Routes
+// Root route - serve frontend if available, otherwise show API message
 app.get('/', (req, res) => {
+  const frontendIndex = path.join(__dirname, 'frontend', 'build', 'index.html');
+  if (fs.existsSync(frontendIndex)) {
+    return res.sendFile(frontendIndex);
+  }
   res.json({ message: 'Lead Generation API (Simple Express Server)' });
 });
 
