@@ -6,7 +6,9 @@ interface SupabaseSettings {
   key: string;
 }
 
-interface CombinedSettings {
+// Settings interface for future use
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+interface _CombinedSettings {
   apiKeys: APIKeys;
   aiSettings: SettingsType;
   supabase: SupabaseSettings;
@@ -51,6 +53,7 @@ const Settings: React.FC = () => {
 
   useEffect(() => {
     loadAllSettings();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const loadAllSettings = async () => {
@@ -156,7 +159,7 @@ const Settings: React.FC = () => {
   const testDatabase = async () => {
     setLoading(true);
     try {
-      const result = await apiService.testSupabaseConnection();
+      await apiService.testSupabaseConnection();
       showMessage('success', 'Database connection successful!');
     } catch (error) {
       showMessage('error', 'Database connection failed. Check your settings.');

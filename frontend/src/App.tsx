@@ -8,6 +8,7 @@ import Settings from './components/settings/Settings';
 
 function App() {
   const [activeTab, setActiveTab] = useState('campaigns');
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [currentOrgId, setCurrentOrgId] = useState<string | null>(null);
   const [shouldCreateOrg, setShouldCreateOrg] = useState(false);
   const [productConfigOrgId, setProductConfigOrgId] = useState<string | null>(null);

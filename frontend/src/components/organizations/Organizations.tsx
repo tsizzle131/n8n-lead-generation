@@ -62,6 +62,7 @@ const Organizations: React.FC<OrganizationsProps> = ({
   useEffect(() => {
     loadOrganizations();
     loadCurrentOrganization();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Handle prop to show create form

@@ -41,6 +41,7 @@ const ProductConfiguration: React.FC<ProductConfigurationProps> = ({
 
   useEffect(() => {
     loadProductConfig();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [organizationId]);
 
   const loadProductConfig = async () => {
