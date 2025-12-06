@@ -925,9 +925,11 @@ app.get('/organizations/:id', async (req, res) => {
 app.put('/organizations/:id', async (req, res) => {
   const { id } = req.params;
   const updates = req.body;
+  console.log(`📝 PUT /organizations/${id} - Updates:`, Object.keys(updates));
+
   const supabaseUrl = appState.supabase?.url;
   const supabaseKey = appState.supabase?.key;
-  
+
   if (!supabaseUrl || !supabaseKey) {
     return res.status(400).json({ error: 'Supabase not configured' });
   }
@@ -1288,13 +1290,53 @@ app.get('/organizations/:id/product-config', async (req, res) => {
   const { id } = req.params;
   const supabaseUrl = appState.supabase?.url;
   const supabaseKey = appState.supabase?.key;
-  
+
   if (!supabaseUrl || !supabaseKey) {
     return res.status(400).json({ error: 'Supabase not configured' });
   }
 
   try {
     const cleanUrl = supabaseUrl.replace(/\/+$/, '');
+
+    // First, try to get the default product from the products table
+    const productsResponse = await fetch(
+      `${cleanUrl}/rest/v1/products?organization_id=eq.${id}&is_default=eq.true&select=*`,
+      {
+        method: 'GET',
+        headers: {
+          'apikey': supabaseKey,
+          'Authorization': `Bearer ${supabaseKey}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    if (productsResponse.ok) {
+      const products = await productsResponse.json();
+      if (products.length > 0) {
+        const product = products[0];
+        // Map product fields to the expected config format
+        const config = {
+          company_mission: null,
+          core_values: null,
+          company_story: null,
+          product_url: product.product_url,
+          product_name: product.name,
+          product_description: product.description,
+          value_proposition: product.value_proposition,
+          target_audience: product.target_audience,
+          industry: product.industry,
+          product_features: product.product_features || [],
+          product_examples: product.product_examples || [],
+          messaging_tone: product.messaging_tone || 'professional',
+          product_analyzed_at: product.product_analyzed_at,
+          custom_icebreaker_prompt: product.custom_icebreaker_prompt
+        };
+        return res.json(config);
+      }
+    }
+
+    // Fall back to deprecated organization columns if no product exists
     const response = await fetch(
       `${cleanUrl}/rest/v1/organizations?id=eq.${id}&select=company_mission,core_values,company_story,product_url_deprecated,product_name_deprecated,product_description_deprecated,value_proposition_deprecated,target_audience_deprecated,industry_deprecated,product_features_deprecated,product_examples_deprecated,messaging_tone_deprecated,product_analyzed_at_deprecated,custom_icebreaker_prompt_deprecated`,
       {
@@ -3268,7 +3310,7 @@ app.get('/api/gmaps/campaigns', async (req, res) => {
 });
 
 app.post('/api/gmaps/campaigns/create', async (req, res) => {
-  const { name, location, keywords, coverage_profile = 'balanced', description, product_id } = req.body;
+  const { name, location, keywords, coverage_profile = 'balanced', description, product_id, icebreaker_template = 'auto' } = req.body;
 
   console.log('📍 Creating Google Maps campaign:', { name, location, keywords, product_id });
 
@@ -3404,8 +3446,9 @@ app.post('/api/gmaps/campaigns/create', async (req, res) => {
     coverage_profile,
     description,
     status: 'draft',
-    organization_id: appState.currentOrganization,  // FIX: Add organization_id
-    product_id: finalProductId,  // NEW: Add product_id
+    organization_id: appState.currentOrganization,
+    product_id: finalProductId,
+    icebreaker_template,  // Template for icebreaker generation
     target_zip_count: zipAnalysis?.zip_codes?.length || (coverage_profile === 'budget' ? 5 : coverage_profile === 'balanced' ? 10 : 20),
     estimated_cost: zipAnalysis?.cost_estimates?.total_cost || (coverage_profile === 'budget' ? 25 : coverage_profile === 'balanced' ? 50 : 100),
     total_businesses_found: 0,
@@ -3477,7 +3520,8 @@ app.post('/api/gmaps/campaigns/:campaignId/execute', async (req, res) => {
   });
 
   // Check if we should use Python campaign manager (with LinkedIn + Bouncer integration)
-  const usePythonManager = appState.settings.use_python_campaign_manager || false;
+  // Default to true - Python manager includes Perplexity enrichment, lead scoring, icebreakers
+  const usePythonManager = appState.settings.use_python_campaign_manager !== false;
 
   if (usePythonManager) {
     // ============================================
@@ -3586,6 +3630,70 @@ app.post('/api/gmaps/campaigns/:campaignId/execute', async (req, res) => {
           } catch (fallbackError) {
             console.error('Error in fallback status update:', fallbackError);
           }
+        }
+
+        // ============================================
+        // POST-COMPLETION: Verify LinkedIn enrichment ran
+        // If not, automatically trigger it as a fallback
+        // ============================================
+        try {
+          const campaign = await gmapsCampaigns.get(campaignId);
+          const linkedinCost = parseFloat(campaign?.linkedin_enrichment_cost || 0);
+
+          // Check if LinkedIn enrichment ran (cost > 0 means it ran)
+          if (linkedinCost === 0 && campaign?.total_businesses_found > 0) {
+            console.log('⚠️  LinkedIn enrichment did not run - triggering fallback...');
+
+            // Trigger LinkedIn enrichment asynchronously
+            const linkedinActorId = appState.apiKeys.linkedin_actor_id || appState.settings?.linkedin_actor_id || 'bebity~linkedin-premium-actor';
+            const bouncerKey = appState.apiKeys.bouncer_api_key || '';
+
+            const runLinkedInFallback = () => {
+              return new Promise((resolve, reject) => {
+                const pythonProcess = spawn(pythonCmd, [
+                  path.join(__dirname, 'scripts', 'maintenance', 'run_linkedin_enrichment.py')
+                ]);
+
+                const input = JSON.stringify({
+                  campaign_id: campaignId,
+                  supabase_url: appState.supabase.url,
+                  supabase_key: appState.supabase.key,
+                  apify_api_key: apifyKey,
+                  bouncer_api_key: bouncerKey,
+                  linkedin_actor_id: linkedinActorId
+                });
+
+                let output = '';
+                pythonProcess.stdout.on('data', (data) => {
+                  output += data.toString();
+                  console.log(data.toString());
+                });
+                pythonProcess.stderr.on('data', (data) => {
+                  console.error(data.toString());
+                });
+                pythonProcess.on('close', (code) => {
+                  if (code === 0) {
+                    resolve(output);
+                  } else {
+                    reject(new Error('LinkedIn fallback failed'));
+                  }
+                });
+                pythonProcess.stdin.write(input);
+                pythonProcess.stdin.end();
+              });
+            };
+
+            try {
+              await runLinkedInFallback();
+              console.log('✅ LinkedIn enrichment fallback completed');
+            } catch (linkedinError) {
+              console.error('❌ LinkedIn enrichment fallback failed:', linkedinError);
+            }
+          } else if (linkedinCost > 0) {
+            console.log(`✅ LinkedIn enrichment already ran (cost: $${linkedinCost.toFixed(2)})`);
+          }
+        } catch (verifyError) {
+          console.error('Error verifying LinkedIn enrichment:', verifyError);
         }
 
       } catch (error) {
@@ -4347,92 +4455,488 @@ app.get('/api/gmaps/campaigns/:campaignId', async (req, res) => {
   }
 });
 
-app.get('/api/gmaps/campaigns/:campaignId/export', async (req, res) => {
+// ============================================
+// RUN LINKEDIN ENRICHMENT INDEPENDENTLY
+// Allows running Phase 2.5 on any campaign that has businesses
+// ============================================
+app.post('/api/gmaps/campaigns/:campaignId/enrich-linkedin', async (req, res) => {
   const { campaignId } = req.params;
-  
+
   try {
     const campaign = await gmapsCampaigns.getById(campaignId);
     if (!campaign) {
       return res.status(404).json({ error: 'Campaign not found' });
     }
-    
-    // Use the new paginated export function to get ALL data
-    const exportData = await gmapsExport.getFullExportData(campaignId);
+
+    // Check for required API keys
+    const apifyKey = appState.apiKeys.apify_api_key;
+    const bouncerKey = appState.apiKeys.bouncer_api_key || '';
+    const linkedinActorId = appState.apiKeys.linkedin_actor_id || appState.settings?.linkedin_actor_id || 'bebity~linkedin-premium-actor';
+
+    if (!apifyKey) {
+      return res.status(400).json({ error: 'Apify API key not configured' });
+    }
+
+    res.json({
+      success: true,
+      message: 'LinkedIn enrichment started',
+      campaign_id: campaignId
+    });
+
+    // Run LinkedIn enrichment asynchronously
+    (async () => {
+      console.log(`\n🔗 Starting LinkedIn enrichment for campaign ${campaignId}`);
+
+      try {
+        const { spawn } = require('child_process');
+        const path = require('path');
+
+        const runLinkedInEnrichment = () => {
+          return new Promise((resolve, reject) => {
+            const pythonProcess = spawn(pythonCmd, [
+              path.join(__dirname, 'scripts', 'maintenance', 'run_linkedin_enrichment.py')
+            ]);
+
+            const input = JSON.stringify({
+              campaign_id: campaignId,
+              supabase_url: appState.supabase.url,
+              supabase_key: appState.supabase.key,
+              apify_api_key: apifyKey,
+              bouncer_api_key: bouncerKey,
+              linkedin_actor_id: linkedinActorId
+            });
+
+            let output = '';
+            let error = '';
+
+            pythonProcess.stdout.on('data', (data) => {
+              const chunk = data.toString();
+              output += chunk;
+              console.log(chunk);
+            });
+
+            pythonProcess.stderr.on('data', (data) => {
+              const chunk = data.toString();
+              error += chunk;
+              console.error(chunk);
+            });
+
+            pythonProcess.on('close', (code) => {
+              if (code !== 0) {
+                reject(new Error(`LinkedIn enrichment failed: ${error}`));
+              } else {
+                try {
+                  const result = JSON.parse(output);
+                  resolve(result);
+                } catch (e) {
+                  resolve({ success: true, output: output });
+                }
+              }
+            });
+
+            pythonProcess.stdin.write(input);
+            pythonProcess.stdin.end();
+          });
+        };
+
+        const result = await runLinkedInEnrichment();
+        console.log('✅ LinkedIn enrichment completed:', result);
+
+      } catch (error) {
+        console.error('❌ LinkedIn enrichment failed:', error);
+      }
+    })();
+
+  } catch (error) {
+    console.error('Error starting LinkedIn enrichment:', error);
+    res.status(500).json({ error: 'Failed to start LinkedIn enrichment' });
+  }
+});
+
+// Template Analytics endpoint - get engagement metrics for A/B testing
+app.get('/api/gmaps/campaigns/:campaignId/template-analytics', async (req, res) => {
+  const { campaignId } = req.params;
+
+  try {
+    // Use the database function we created in migration
+    const { data, error } = await supabase.rpc('get_campaign_template_analytics', {
+      p_campaign_id: campaignId
+    });
+
+    if (error) {
+      console.error('Error fetching template analytics:', error);
+      // Fallback to manual query if RPC not available
+      const campaign = await gmapsCampaigns.getById(campaignId);
+      if (!campaign) {
+        return res.status(404).json({ error: 'Campaign not found' });
+      }
+
+      // Manual aggregation
+      const { data: businesses } = await supabase
+        .from('gmaps_businesses')
+        .select('id, email, icebreaker, engagement_status, total_opens, total_clicks, replied, bounced')
+        .eq('campaign_id', campaignId);
+
+      const analytics = {
+        campaign_id: campaignId,
+        template: campaign.icebreaker_template || 'auto',
+        instantly_campaign_id: campaign.instantly_campaign_id,
+        total_businesses: businesses?.length || 0,
+        with_email: businesses?.filter(b => b.email).length || 0,
+        with_icebreaker: businesses?.filter(b => b.icebreaker).length || 0,
+        total_sent: businesses?.filter(b => b.engagement_status && b.engagement_status !== 'not_sent').length || 0,
+        total_opens: businesses?.reduce((sum, b) => sum + (b.total_opens || 0), 0) || 0,
+        total_clicks: businesses?.reduce((sum, b) => sum + (b.total_clicks || 0), 0) || 0,
+        total_replies: businesses?.filter(b => b.replied).length || 0,
+        total_bounces: businesses?.filter(b => b.bounced).length || 0
+      };
+
+      // Calculate rates
+      if (analytics.total_sent > 0) {
+        analytics.open_rate = Math.round((businesses.filter(b => b.total_opens > 0).length / analytics.total_sent) * 10000) / 100;
+        analytics.reply_rate = Math.round((analytics.total_replies / analytics.total_sent) * 10000) / 100;
+      } else {
+        analytics.open_rate = 0;
+        analytics.reply_rate = 0;
+      }
+
+      return res.json({ success: true, analytics });
+    }
+
+    res.json({ success: true, analytics: data });
+  } catch (error) {
+    console.error('Error fetching template analytics:', error);
+    res.status(500).json({ error: 'Failed to fetch template analytics' });
+  }
+});
+
+app.get('/api/gmaps/campaigns/:campaignId/export', async (req, res) => {
+  const { campaignId } = req.params;
+  const format = req.query.format || 'standard'; // 'standard' (17 fields) or 'premium' (52 fields)
+
+  try {
+    const campaign = await gmapsCampaigns.getById(campaignId);
+    if (!campaign) {
+      return res.status(404).json({ error: 'Campaign not found' });
+    }
+
+    let exportData;
+    let headers;
+    let formatRow;
+
+    if (format === 'premium') {
+      // Comprehensive 142-field export with all enrichment data
+      exportData = await gmapsExport.getPremiumExportData(campaignId);
+
+      headers = [
+        // Business Identity (12)
+        'Business Name', 'Category', 'All Categories', 'Description', 'Google Place ID',
+        'Rating', 'Review Count', 'Price Level', 'Hours JSON', 'Years in Business',
+        'Is Small Business', 'Is Women Owned',
+        // Business Certifications (4)
+        'Is Veteran Owned', 'Is Minority Owned', 'Accepts Credit Cards', 'Accepts NFC Payments',
+        // Accessibility & Booking (4)
+        'Is Wheelchair Accessible', 'Has Online Booking', 'Booking URL', 'Appointment Required',
+        // Contact Person (7)
+        'Contact First Name', 'Contact Last Name', 'Contact Title', 'Contact Seniority',
+        'Contact LinkedIn', 'Decision Maker Title', 'Decision Maker Salutation',
+        // Email Data (16)
+        'Primary Email', 'Email Source', 'Email Confidence Score', 'Email Verified',
+        'Email Deliverable', 'Email Risky', 'Email Disposable', 'Email Safe',
+        'Email Role Based', 'Email Free Provider', 'Bouncer Status', 'Bouncer Score',
+        'Bouncer Reason', 'Bouncer Verified At', 'Email Verified Source', 'Email Quality Tier',
+        // Phone Data (3)
+        'Primary Phone', 'LinkedIn Phone', 'Facebook Phone',
+        // Address & Location (10)
+        'Full Address', 'City', 'State', 'ZIP Code', 'County',
+        'Latitude', 'Longitude', 'Timezone', 'Country', 'Scraped ZIP Code',
+        // Market Intelligence - ZIP Data (12)
+        'ZIP Population', 'ZIP Median Income', 'ZIP Median Age', 'ZIP Pct College',
+        'ZIP Unemployment Rate', 'ZIP Median Home Value', 'ZIP Market Score',
+        'ZIP Density Category', 'ZIP Growth Rate', 'ZIP Lead Tier', 'ZIP Known For', 'ZIP Target Industries',
+        // Social Presence (9)
+        'Website', 'Facebook URL', 'Facebook Likes', 'Facebook Followers', 'Facebook Page Name',
+        'LinkedIn URL', 'LinkedIn Connections', 'Instagram URL', 'Twitter URL',
+        // AI Social Discovery (3)
+        'AI Social Facebook', 'AI Social Instagram', 'AI Social LinkedIn',
+        // Review Intelligence (5)
+        'Five Star Percent', 'Review Sentiment Tags', 'AI Review Themes', 'Competitor Count', 'Competitors JSON',
+        // Company Intelligence (8)
+        'Estimated Employees', 'Estimated Revenue', 'NAICS Code', 'SIC Code',
+        'Industry Classification', 'AI Target Customers', 'AI Business Model', 'AI Community Involvement',
+        // Perplexity AI Enrichment (16)
+        'Perplexity Summary', 'AI Owner Name', 'AI Employee Count', 'AI Year Founded',
+        'AI Specialties', 'AI Recent News', 'AI Awards', 'AI Pain Points',
+        'AI Research Source', 'AI Research Confidence', 'Perplexity Enriched',
+        'Perplexity Enriched At', 'Perplexity Model', 'Perplexity Cost', 'AI Contacts', 'Staff Directory',
+        // Outreach Content (6)
+        'Icebreaker', 'Subject Line', 'Icebreaker Variant', 'Icebreaker Template',
+        'Icebreaker Generated At', 'Icebreaker Metadata JSON',
+        // Lead Scoring (6)
+        'Lead Score', 'Lead Score Breakdown', 'Buyer Fit Score', 'Is ICP Match',
+        'Is Perfect Fit', 'Data Completeness Score',
+        // Engagement Tracking (9)
+        'Engagement Status', 'Engagement Score', 'Last Engagement At',
+        'Total Opens', 'Total Clicks', 'Replied', 'Bounced', 'Unsubscribed', 'First Sent At',
+        // Enrichment Status (7)
+        'Needs Enrichment', 'Enrichment Status', 'Enrichment Attempts',
+        'Last Enrichment Attempt', 'LinkedIn Enriched', 'AI Enriched At', 'Scraped At',
+        // Email Verification Budget (4)
+        'Email Verification Budget', 'Email Verification Spent', 'Contacts Found', 'Contacts Verified',
+        // Timestamps (2)
+        'Created At', 'Updated At'
+      ];
+
+      formatRow = (biz) => [
+        // Business Identity (12)
+        biz.businessName, biz.businessCategory, biz.allCategories, biz.description, biz.googlePlaceId,
+        biz.rating, biz.reviewCount, biz.priceLevel, biz.hoursJson, biz.yearsInBusiness,
+        biz.isSmallBusiness, biz.isWomenOwned,
+        // Business Certifications (4)
+        biz.isVeteranOwned, biz.isMinorityOwned, biz.acceptsCreditCards, biz.acceptsNfcPayments,
+        // Accessibility & Booking (4)
+        biz.isWheelchairAccessible, biz.hasOnlineBooking, biz.bookingUrl, biz.appointmentRequired,
+        // Contact Person (7)
+        biz.contactFirstName, biz.contactLastName, biz.contactTitle, biz.contactSeniority,
+        biz.contactLinkedIn, biz.decisionMakerTitle, biz.decisionMakerSalutation,
+        // Email Data (16)
+        biz.primaryEmail, biz.emailSource, biz.emailConfidenceScore, biz.emailVerified,
+        biz.emailDeliverable, biz.emailRisky, biz.emailDisposable, biz.emailSafe,
+        biz.emailRoleBased, biz.emailFreeProvider, biz.bouncerStatus, biz.bouncerScore,
+        biz.bouncerReason, biz.bouncerVerifiedAt, biz.emailVerifiedSource, biz.emailQualityTier,
+        // Phone Data (3)
+        biz.primaryPhone, biz.linkedInPhone, biz.facebookPhone,
+        // Address & Location (10)
+        biz.fullAddress, biz.city, biz.state, biz.zipCode, biz.county,
+        biz.latitude, biz.longitude, biz.timezone, biz.country, biz.scrapedZipCode,
+        // Market Intelligence - ZIP Data (12)
+        biz.zipPopulation, biz.zipMedianIncome, biz.zipMedianAge, biz.zipPctCollege,
+        biz.zipUnemploymentRate, biz.zipMedianHomeValue, biz.zipMarketScore,
+        biz.zipDensityCategory, biz.zipGrowthRate, biz.zipLeadTier, biz.zipKnownFor, biz.zipTargetIndustries,
+        // Social Presence (9)
+        biz.website, biz.facebookUrl, biz.facebookLikes, biz.facebookFollowers, biz.facebookPageName,
+        biz.linkedInUrl, biz.linkedInConnections, biz.instagramUrl, biz.twitterUrl,
+        // AI Social Discovery (3)
+        biz.aiSocialFacebook, biz.aiSocialInstagram, biz.aiSocialLinkedin,
+        // Review Intelligence (5)
+        biz.fiveStarPercent, biz.reviewSentimentTags, biz.aiReviewThemes, biz.competitorCount, biz.competitorsJson,
+        // Company Intelligence (8)
+        biz.estimatedEmployees, biz.estimatedRevenue, biz.naicsCode, biz.sicCode,
+        biz.industryClassification, biz.aiTargetCustomers, biz.aiBusinessModel, biz.aiCommunityInvolvement,
+        // Perplexity AI Enrichment (16)
+        biz.perplexitySummary, biz.aiOwnerName, biz.aiEmployeeCount, biz.aiYearFounded,
+        biz.aiSpecialties, biz.aiRecentNews, biz.aiAwards, biz.aiPainPoints,
+        biz.aiResearchSource, biz.aiResearchConfidence, biz.perplexityEnriched,
+        biz.perplexityEnrichedAt, biz.perplexityModel, biz.perplexityCost, biz.aiContacts, biz.staffDirectory,
+        // Outreach Content (6)
+        biz.icebreaker, biz.subjectLine, biz.icebreakerVariant, biz.icebreakerTemplate,
+        biz.icebreakerGeneratedAt, biz.icebreakerMetadataJson,
+        // Lead Scoring (6)
+        biz.leadScore, biz.leadScoreBreakdown, biz.buyerFitScore, biz.isICPMatch,
+        biz.isPerfectFit, biz.dataCompletenessScore,
+        // Engagement Tracking (9)
+        biz.engagementStatus, biz.engagementScore, biz.lastEngagementAt,
+        biz.totalOpens, biz.totalClicks, biz.replied, biz.bounced, biz.unsubscribed, biz.firstSentAt,
+        // Enrichment Status (7)
+        biz.needsEnrichment, biz.enrichmentStatus, biz.enrichmentAttempts,
+        biz.lastEnrichmentAttempt, biz.linkedinEnriched, biz.aiEnrichedAt, biz.scrapedAt,
+        // Email Verification Budget (4)
+        biz.emailVerificationBudget, biz.emailVerificationSpent, biz.contactsFound, biz.contactsVerified,
+        // Timestamps (2)
+        biz.createdAt, biz.updatedAt
+      ];
+    } else if (format === 'client') {
+      // Client-friendly white-label export - ALL valuable data, just renamed headers
+      // Hides: Perplexity, Bouncer, GMaps, AI, Apify sources
+      // Removes: Internal timestamps, costs, enrichment status
+      exportData = await gmapsExport.getPremiumExportData(campaignId);
+
+      // Filter out fake @google.com emails (generated from email guessing, not real)
+      // Keep the business data but clear the email fields
+      exportData = exportData.map(biz => {
+        if (biz.primaryEmail && biz.primaryEmail.toLowerCase().endsWith('@google.com')) {
+          return {
+            ...biz,
+            primaryEmail: null,
+            emailSource: null,
+            emailConfidenceScore: null,
+            emailVerified: false,
+            bouncerStatus: null,
+            bouncerScore: null,
+            bouncerReason: null,
+            emailDeliverable: false,
+            emailRisky: false,
+            emailSafe: false
+          };
+        }
+        return biz;
+      });
+
+      headers = [
+        // === BUSINESS IDENTITY (12) ===
+        'Company Name', 'Category', 'All Categories', 'Description',
+        'Rating', 'Review Count', 'Price Level', 'Operating Hours',
+        'Years in Business', 'Small Business', 'Women-Owned', 'Veteran-Owned',
+        // === CERTIFICATIONS & ACCESSIBILITY (4) ===
+        'Minority-Owned', 'Accepts Credit Cards', 'Wheelchair Accessible', 'Online Booking Available',
+        // === DECISION MAKER (7) ===
+        'Contact First Name', 'Contact Last Name', 'Contact Title', 'Contact Seniority',
+        'Contact LinkedIn', 'Owner/Principal Name', 'Title/Credentials', 'Salutation',
+        // === EMAIL VERIFICATION (10) ===
+        'Email', 'Email Source', 'Email Confidence', 'Email Verified',
+        'Email Status', 'Email Quality Score', 'Email Reason',
+        'Deliverable', 'Risky', 'Safe to Send',
+        // === PHONE (3) ===
+        'Phone', 'LinkedIn Phone', 'Facebook Phone',
+        // === LOCATION (9) ===
+        'Address', 'City', 'State', 'ZIP Code', 'County',
+        'Latitude', 'Longitude', 'Timezone', 'Country',
+        // === MARKET INTELLIGENCE (10) ===
+        'Market Score', 'Population', 'Median Income', 'Median Age',
+        'College Educated %', 'Unemployment Rate', 'Median Home Value',
+        'Market Density', 'Growth Rate', 'Market Tier',
+        // === SOCIAL PRESENCE (7) ===
+        'Website', 'Facebook URL', 'Facebook Likes', 'Facebook Followers',
+        'LinkedIn URL', 'Instagram URL', 'Discovered Facebook', 'Discovered LinkedIn',
+        // === REPUTATION & REVIEWS (3) ===
+        '5-Star %', 'Review Themes', 'Competitor Count',
+        // === COMPANY INTEL (4) ===
+        'Target Customers', 'Business Model', 'Community Involvement', 'Industry',
+        // === RESEARCH INSIGHTS (10) ===
+        'Company Summary', 'Owner Name', 'Employee Count', 'Year Founded',
+        'Specialties', 'Recent News', 'Awards', 'Business Challenges',
+        'Research Confidence', 'Key Contacts',
+        // === OUTREACH (4) ===
+        'Personalized Intro', 'Subject Line', 'Intro Template', 'Intro Variant',
+        // === LEAD SCORING (5) ===
+        'Lead Score', 'Score Breakdown', 'Buyer Fit Score', 'ICP Match', 'Data Completeness'
+      ];
+
+      // Helper to derive email status from bouncer_status
+      const getEmailStatus = (biz) => {
+        if (!biz.primaryEmail) return '';
+        if (biz.bouncerStatus === 'deliverable') return 'Verified';
+        if (biz.bouncerStatus === 'risky') return 'Review Needed';
+        if (biz.bouncerStatus === 'undeliverable') return 'Invalid';
+        if (biz.bouncerStatus) return biz.bouncerStatus;
+        return 'Pending';
+      };
+
+      formatRow = (biz) => [
+        // === BUSINESS IDENTITY (12) ===
+        biz.businessName, biz.businessCategory, biz.allCategories, biz.description,
+        biz.rating, biz.reviewCount, biz.priceLevel, biz.hoursJson,
+        biz.yearsInBusiness, biz.isSmallBusiness ? 'Yes' : '', biz.isWomenOwned ? 'Yes' : '', biz.isVeteranOwned ? 'Yes' : '',
+        // === CERTIFICATIONS & ACCESSIBILITY (4) ===
+        biz.isMinorityOwned ? 'Yes' : '', biz.acceptsCreditCards ? 'Yes' : '', biz.isWheelchairAccessible ? 'Yes' : '', biz.hasOnlineBooking ? 'Yes' : '',
+        // === DECISION MAKER (8) ===
+        biz.contactFirstName, biz.contactLastName, biz.contactTitle, biz.contactSeniority,
+        biz.contactLinkedIn, biz.aiOwnerName, biz.decisionMakerTitle, biz.decisionMakerSalutation,
+        // === EMAIL VERIFICATION (10) ===
+        biz.primaryEmail, biz.emailSource, biz.emailConfidenceScore, biz.emailVerified ? 'Yes' : '',
+        getEmailStatus(biz), biz.bouncerScore, biz.bouncerReason,
+        biz.emailDeliverable ? 'Yes' : '', biz.emailRisky ? 'Yes' : '', biz.emailSafe ? 'Yes' : '',
+        // === PHONE (3) ===
+        biz.primaryPhone, biz.linkedInPhone, biz.facebookPhone,
+        // === LOCATION (9) ===
+        biz.fullAddress, biz.city, biz.state, biz.zipCode, biz.county,
+        biz.latitude, biz.longitude, biz.timezone, biz.country,
+        // === MARKET INTELLIGENCE (10) ===
+        biz.zipMarketScore, biz.zipPopulation, biz.zipMedianIncome, biz.zipMedianAge,
+        biz.zipPctCollege, biz.zipUnemploymentRate, biz.zipMedianHomeValue,
+        biz.zipDensityCategory, biz.zipGrowthRate, biz.zipLeadTier,
+        // === SOCIAL PRESENCE (8) ===
+        biz.website, biz.facebookUrl, biz.facebookLikes, biz.facebookFollowers,
+        biz.linkedInUrl, biz.instagramUrl, biz.aiSocialFacebook, biz.aiSocialLinkedin,
+        // === REPUTATION & REVIEWS (3) ===
+        biz.fiveStarPercent, biz.aiReviewThemes, biz.competitorCount,
+        // === COMPANY INTEL (4) ===
+        biz.aiTargetCustomers, biz.aiBusinessModel, biz.aiCommunityInvolvement, biz.industryClassification,
+        // === RESEARCH INSIGHTS (10) ===
+        biz.perplexitySummary, biz.aiOwnerName, biz.aiEmployeeCount, biz.aiYearFounded,
+        biz.aiSpecialties, biz.aiRecentNews, biz.aiAwards, biz.aiPainPoints,
+        biz.aiResearchConfidence, biz.staffDirectory,
+        // === OUTREACH (4) ===
+        biz.icebreaker, biz.subjectLine, biz.icebreakerTemplate, biz.icebreakerVariant,
+        // === LEAD SCORING (5) ===
+        biz.leadScore, biz.leadScoreBreakdown, biz.buyerFitScore, biz.isICPMatch ? 'Yes' : '', biz.dataCompletenessScore
+      ];
+    } else {
+      // Standard 17-field export (backward compatible)
+      exportData = await gmapsExport.getFullExportData(campaignId);
+
+      headers = [
+        'Business Name', 'Address', 'Phone', 'Website', 'Email',
+        'Icebreaker', 'Subject Line', 'LinkedIn URL', 'Facebook URL',
+        'Email Source', 'Rating', 'Reviews', 'Category',
+        'Address ZIP', 'Source ZIP', 'Neighborhood', 'Search Query'
+      ];
+
+      formatRow = (business) => {
+        const emailSource = business.emailSource === 'google_maps' ? 'Google Maps' :
+                           business.emailSource === 'facebook' ? 'Facebook' :
+                           business.emailSource === 'website' ? 'Website' :
+                           business.emailSource === 'manual' ? 'Manual' :
+                           'Not Found';
+        return [
+          business.title || business.name || '',
+          business.address || '',
+          business.phone || '',
+          business.website || '',
+          business.email || '',
+          business.icebreaker || '',
+          business.subjectLine || '',
+          business.linkedInUrl || business.linkedin || '',
+          business.facebookUrl || business.facebook || '',
+          emailSource,
+          business.rating || '',
+          business.reviews || '',
+          business.categoryName || business.category || '',
+          business.postalCode || business.postal_code || business.zip || '',
+          business.sourceZip || '',
+          business.sourceNeighborhood || '',
+          business.sourceQuery || ''
+        ];
+      };
+    }
+
     if (!exportData || exportData.length === 0) {
       return res.status(400).json({ error: 'No businesses found in campaign' });
     }
 
-    console.log(`Exporting ${exportData.length} businesses for campaign ${campaign.name}`);
-  
-  // Create CSV header
-  const headers = [
-    'Business Name',
-    'Address',
-    'Phone',
-    'Website',
-    'Email',
-    'Icebreaker',
-    'Subject Line',
-    'LinkedIn URL',
-    'Facebook URL',
-    'Email Source',
-    'Rating',
-    'Reviews',
-    'Category',
-    'Address ZIP',
-    'Source ZIP',
-    'Neighborhood',
-    'Search Query'
-  ];
-  
-  // Create CSV rows
-  const rows = exportData.map(business => {
-    // Use the actual email source from database
-    const emailSource = business.emailSource === 'google_maps' ? 'Google Maps' :
-                       business.emailSource === 'facebook' ? 'Facebook' :
-                       business.emailSource === 'website' ? 'Website' :
-                       business.emailSource === 'manual' ? 'Manual' :
-                       'Not Found';
-    
-    return [
-      business.title || business.name || '',
-      business.address || '',
-      business.phone || '',
-      business.website || '',
-      business.email || '',
-      business.icebreaker || '',
-      business.subjectLine || '',
-      business.linkedInUrl || business.linkedin || '',
-      business.facebookUrl || business.facebook || '',
-      emailSource,
-      business.rating || '',
-      business.reviews || '',
-      business.categoryName || business.category || '',
-      business.postalCode || business.postal_code || business.zip || '',
-      business.sourceZip || '',
-      business.sourceNeighborhood || '',
-      business.sourceQuery || ''
-    ].map(field => {
-      // Escape fields that contain commas, quotes, or newlines
-      const str = String(field);
-      if (str.includes(',') || str.includes('"') || str.includes('\n')) {
-        return `"${str.replace(/"/g, '""')}"`;
-      }
-      return str;
-    }).join(',');
-  });
-  
-  // Combine headers and rows
-  const csvContent = [headers.join(','), ...rows].join('\n');
-  
-  // Add UTF-8 BOM for better Excel compatibility
-  const bom = '\uFEFF';
-  const csvWithBom = bom + csvContent;
-  
-  // Generate filename
-  const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
-  const filename = `gmaps-export-${campaign.name.replace(/[^a-zA-Z0-9]/g, '_')}-${timestamp}.csv`;
-  
+    console.log(`Exporting ${exportData.length} businesses (${format} format) for campaign ${campaign.name}`);
+
+    // Create CSV rows
+    const rows = exportData.map(business => {
+      return formatRow(business).map(field => {
+        // Escape fields that contain commas, quotes, or newlines
+        const str = String(field ?? '');
+        if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+          return `"${str.replace(/"/g, '""')}"`;
+        }
+        return str;
+      }).join(',');
+    });
+
+    // Combine headers and rows
+    const csvContent = [headers.join(','), ...rows].join('\n');
+
+    // Add UTF-8 BOM for better Excel compatibility
+    const bom = '\uFEFF';
+    const csvWithBom = bom + csvContent;
+
+    // Generate filename - client format uses cleaner naming without "gmaps"
+    const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
+    const cleanCampaignName = campaign.name.replace(/[^a-zA-Z0-9]/g, '_');
+    let filename;
+    if (format === 'client') {
+      // White-label filename for clients - no internal naming
+      filename = `leads-${cleanCampaignName}-${timestamp}.csv`;
+    } else {
+      const formatSuffix = format === 'premium' ? '-premium' : '';
+      filename = `gmaps-export-${cleanCampaignName}${formatSuffix}-${timestamp}.csv`;
+    }
+
     // Send CSV as download
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
@@ -4472,14 +4976,6 @@ app.post('/api/gmaps/campaigns/:campaignId/export-to-instantly', async (req, res
   try {
     console.log(`📤 Exporting campaign ${campaignId} to Instantly.ai`);
 
-    // Get Instantly API key
-    const instantlyApiKey = appState.apiKeys?.instantly_api_key;
-    if (!instantlyApiKey) {
-      return res.status(400).json({
-        error: 'Instantly.ai API key not configured. Please add it in Settings.'
-      });
-    }
-
     // Get Supabase credentials
     const supabaseUrl = process.env.SUPABASE_URL;
     const supabaseKey = process.env.SUPABASE_KEY;
@@ -4490,10 +4986,45 @@ app.post('/api/gmaps/campaigns/:campaignId/export-to-instantly', async (req, res
       });
     }
 
-    // Get campaign info for naming
+    // Get campaign info for naming and organization
     const campaign = await gmapsCampaigns.getById(campaignId);
     if (!campaign) {
       return res.status(404).json({ error: 'Campaign not found' });
+    }
+
+    // Get organization-level Instantly API key if available
+    let instantlyApiKey = null;
+    const orgId = campaign.organization_id || appState.currentOrganization;
+
+    if (orgId) {
+      try {
+        const { data: org } = await supabase
+          .from('organizations')
+          .select('instantly_api_key_encrypted')
+          .eq('id', orgId)
+          .single();
+
+        if (org?.instantly_api_key_encrypted) {
+          instantlyApiKey = org.instantly_api_key_encrypted;
+          console.log(`📧 Using organization-level Instantly API key for org: ${orgId}`);
+        }
+      } catch (err) {
+        console.log(`⚠️ Could not fetch org API key: ${err.message}`);
+      }
+    }
+
+    // Fall back to global API key if no org-level key
+    if (!instantlyApiKey) {
+      instantlyApiKey = appState.apiKeys?.instantly_api_key;
+      if (instantlyApiKey) {
+        console.log('📧 Using global Instantly API key (no org-level key found)');
+      }
+    }
+
+    if (!instantlyApiKey) {
+      return res.status(400).json({
+        error: 'Instantly.ai API key not configured. Please add it in Organization Settings or global Settings.'
+      });
     }
 
     const finalCampaignName = campaignName || `${campaign.name} - ${new Date().toISOString().split('T')[0]}`;
@@ -4510,7 +5041,7 @@ app.post('/api/gmaps/campaigns/:campaignId/export-to-instantly', async (req, res
       '--api-key', instantlyApiKey,
       '--supabase-url', supabaseUrl,
       '--supabase-key', supabaseKey,
-      '--organization-id', appState.currentOrganization || ''
+      '--organization-id', orgId || ''
     ];
 
     const exportPromise = new Promise((resolve, reject) => {
